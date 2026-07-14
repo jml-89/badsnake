@@ -46,9 +46,13 @@ export function createThreeRenderer(
 
   // Shared, reused resources — cells are cheap Mesh objects over these.
   const cellGeometry = new THREE.PlaneGeometry(0.85, 0.85);
-  const headMaterial = new THREE.MeshBasicMaterial({ color: COLORS.head });
-  const bodyMaterial = new THREE.MeshBasicMaterial({ color: COLORS.body });
-  const foodMaterial = new THREE.MeshBasicMaterial({ color: COLORS.food });
+  // The camera inverts Y (top=0, bottom=rows) to put the origin top-left, which
+  // flips triangle winding — so the filled cell quads must render double-sided
+  // or back-face culling makes them invisible. (Line grids have no winding, so
+  // they're unaffected; that's why only the grid showed before this.)
+  const headMaterial = new THREE.MeshBasicMaterial({ color: COLORS.head, side: THREE.DoubleSide });
+  const bodyMaterial = new THREE.MeshBasicMaterial({ color: COLORS.body, side: THREE.DoubleSide });
+  const foodMaterial = new THREE.MeshBasicMaterial({ color: COLORS.food, side: THREE.DoubleSide });
 
   const cells = new THREE.Group();
   scene.add(cells);

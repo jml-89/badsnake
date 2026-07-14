@@ -1,8 +1,11 @@
 import { initialState, tick } from "../core/game/snake";
 import type { GameState } from "../core/game/types";
+import type { IntentSource } from "../core/ports/input";
 import { createBrowserClock } from "../adapters/clock/browser-clock";
 import { createKeyboardInput } from "../adapters/input/keyboard";
+import { createTouchInput } from "../adapters/input/touch";
 import { createThreeRenderer } from "../adapters/render/three-renderer";
+import { createHud } from "../adapters/hud/dom-hud";
 
 // --- Composition root: the only place that touches both sides and owns real
 // time. It constructs the impure adapters, injects them, and runs the loop. ---
@@ -18,8 +21,19 @@ if (container === null) {
 }
 
 const clock = createBrowserClock();
-const input = createKeyboardInput();
+
+// Two input devices — keyboard (desktop) and the on-screen D-pad/buttons
+// (touch) — merge into one intent stream. The kernel never knows there was
+// more than one device: it only ever sees the drained, device-agnostic
+// intents. Adding a gamepad or gestures later is just another source here.
+const keyboard = createKeyboardInput();
+const touch = createTouchInput();
+const input: IntentSource = {
+  drain: () => keyboard.drain().concat(touch.drain()),
+};
+
 const renderer = createThreeRenderer(container, COLS, ROWS);
+const hud = createHud();
 
 let state: GameState = initialState({ width: COLS, height: ROWS, seed: SEED });
 let accumulator = 0;
@@ -39,6 +53,7 @@ function frame(): void {
   }
 
   renderer.render(state, accumulator / TICK_MS);
+  hud.update(state);
   requestAnimationFrame(frame);
 }
 
