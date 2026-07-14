@@ -10,11 +10,19 @@ export type Turn = "left" | "right";
 
 /**
  * Device-agnostic player intent. The kernel consumes intents, never keycodes.
- * `steer` is absolute ("face north"); `turn` is relative ("turn left from the
- * current heading") and is resolved by the kernel, which owns the heading.
+ *
+ * - `steer` is absolute at cardinal resolution ("face north"), natural for arrow
+ *   keys and d-pads.
+ * - `steerAngle` is absolute at full resolution — a heading *index* (see
+ *   `heading.ts`), natural for an analog stick. The device does the trig and
+ *   hands the kernel an integer, so determinism is preserved. In cardinal mode
+ *   the kernel snaps it to the nearest cardinal.
+ * - `turn` is relative ("turn left from the current heading") and is resolved by
+ *   the kernel, which owns the heading.
  */
 export type Intent =
   | { readonly kind: "steer"; readonly direction: Direction }
+  | { readonly kind: "steerAngle"; readonly index: number }
   | { readonly kind: "turn"; readonly turn: Turn }
   | { readonly kind: "pause" }
   | { readonly kind: "restart" };

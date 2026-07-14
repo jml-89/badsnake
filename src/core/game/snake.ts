@@ -5,9 +5,11 @@ import {
   EAST,
   QUARTER,
   isReversal,
+  nearestCardinal,
   rotateBy,
   rotateToward,
   unitOf,
+  wrap,
 } from "./heading";
 
 // --- Tunables -------------------------------------------------------------
@@ -109,6 +111,8 @@ function steerCardinal(heading: number, intents: readonly Intent[]): number {
     let candidate: number | null = null;
     if (intent.kind === "steer") {
       candidate = DIRECTION_INDEX[intent.direction];
+    } else if (intent.kind === "steerAngle") {
+      candidate = nearestCardinal(intent.index); // an analog stick, snapped to a cardinal
     } else if (intent.kind === "turn") {
       candidate = rotateBy(heading, intent.turn === "left" ? -QUARTER : QUARTER);
     }
@@ -132,6 +136,8 @@ function steerAnalog(heading: number, intents: readonly Intent[]): number {
   for (const intent of intents) {
     if (intent.kind === "steer") {
       target = DIRECTION_INDEX[intent.direction];
+    } else if (intent.kind === "steerAngle") {
+      target = wrap(intent.index); // full-resolution pointing — the joystick's home turf
     } else if (intent.kind === "turn") {
       net += intent.turn === "left" ? -TURN_STEP : TURN_STEP;
     }

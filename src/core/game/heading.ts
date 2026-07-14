@@ -71,3 +71,8 @@ export function rotateToward(heading: number, target: number, maxStep: number): 
 export function isReversal(a: number, b: number): boolean {
   return wrap(a - b) === HALF;
 }
+
+/** Snap an arbitrary heading to the nearest cardinal index (0/64/128/192). */
+export function nearestCardinal(heading: number): number {
+  return wrap(Math.round(wrap(heading) / QUARTER) * QUARTER);
+}

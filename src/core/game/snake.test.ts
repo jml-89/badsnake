@@ -142,6 +142,28 @@ describe("snake kernel", () => {
     expect(crossedQuarter).toBe(true);
   });
 
+  it("snaps a steerAngle to the nearest cardinal in cardinal mode", () => {
+    const s0 = initialState({ width: 10, height: 10, seed: 1 }); // heading east
+    // An angle a hair south of due-east snaps to SOUTH (a legal 90° turn).
+    const s1 = tick(s0, [{ kind: "steerAngle", index: SOUTH - 4 }], 120);
+    expect(s1.heading).toBe(SOUTH);
+    // An angle near due-west would be a reversal from east → rejected.
+    const s2 = tick(s0, [{ kind: "steerAngle", index: WEST + 2 }], 120);
+    expect(s2.heading).toBe(EAST);
+  });
+
+  it("follows a steerAngle at full resolution in analog mode, bounded per tick", () => {
+    const base = initialState({ width: 40, height: 40, seed: 1 });
+    const analog: GameState = { ...base, mode: "analog", powerup: null, heading: EAST };
+    // Point far away (south): the heading rotates toward it but not all the way in
+    // one tick, and lands off the cardinal axis.
+    const after = tick(analog, [{ kind: "steerAngle", index: SOUTH }], 120);
+    const moved = signedDelta(EAST, after.heading);
+    expect(moved).toBeGreaterThan(0); // turned toward south (clockwise)
+    expect(after.heading).not.toBe(SOUTH); // but did not snap there
+    expect(after.heading).not.toBe(EAST);
+  });
+
   it("stays a deterministic fold in analog mode", () => {
     const run = (): GameState => {
       let s: GameState = initialState({ width: 30, height: 30, seed: 9 });
