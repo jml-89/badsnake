@@ -171,6 +171,72 @@ Tests feed a sequence of intents directly — `[Steer.North, Pause, Steer.East]`
 or `[Turn.Left, Turn.Left]` at a known state — with **no device, no keymap, no
 keycode** anywhere in the test. That is the whole point of virtualizing input.
 
+## Determinism buys replay: the game is a fold over the intent stream
+
+The previous decisions combine into one property that is worth stating as an
+explicit design goal, because it shapes how we model `state`:
+
+> The kernel is **pure**, simulation time is a **fixed-timestep integer tick**,
+> and randomness is **seeded**. Therefore the entire game is a deterministic
+> function of `(seed, intent stream)`:
+>
+> ```
+> finalState = intents.reduce(tick, initialState(seed))
+> ```
+
+### Recordings are seed + tick-stamped intents, not state snapshots
+
+Because of the equation above, a complete recording of a session is just the
+**seed** plus the **sparse, tick-stamped intent stream** (`at tick 47:
+Turn(Left)`). That is kilobytes for a long game, and it is *lossless* — replay
+reconstructs every frame exactly. State is derived, not stored.
+
+**Record at the intent layer, never the device layer.** Intent is
+device-agnostic and sits *above* bindings, so an intent recording:
+
+- replays identically regardless of the device it was captured on, and
+- **survives the player rebinding their controls**, because bindings are
+  upstream of the recorded data.
+
+Recording keystrokes would be brittle on both counts; recording intent is
+portable and rebind-proof. This is the second payoff of virtualizing input.
+
+### What this unlocks
+
+- **Replay** — play back any session.
+- **Attract / demo mode** — the game plays itself from a recorded stream.
+- **Ghosts** — race a recording of a past run alongside the live one.
+- **Bug repro as an artifact** — a bug report *is* a seed + intent stream; replay
+  drops you into the exact failing state (time-travel debugging, for free).
+- **Tests as recorded sessions** — a golden intent stream + expected final state
+  is a full-fidelity integration test authored by simply playing.
+- **A path to rollback netcode** — not a goal, but this is exactly its substrate,
+  so nothing here forecloses it.
+
+### Total determinism is the price — and our lint rules are what pay it
+
+Replay is exact only if determinism is **total**: every source of
+nondeterminism must go through a port. This is the *same* boundary the import
+lint and the banned-`core`-globals already enforce — so those rules stop being
+mere tidiness and become the guarantee that **replay cannot silently diverge**.
+A stray `Date.now()` or `Math.random()` in the kernel would corrupt every
+recording; the linter failing the build is what keeps the stream honest. One
+boundary, two payoffs: testability and reproducibility.
+
+JS-specific commitments this relies on:
+
+- We depend on `Map`/`Set` iteration being **insertion-ordered** (it is) and
+  avoid anything hash-ordered or wall-clock-seeded.
+- The integer **tick index** is the timeline the stream indexes into — which is
+  *why* simulation time is an integer counter, not a float of seconds.
+
+### Keyframes are an optimization, not the source of truth
+
+To seek within a long recording without replaying from tick 0, we may store
+periodic state snapshots. These are a **cache/index** — the intent stream stays
+canonical, snapshots are derived. One authoritative representation; snapshots
+only where fast seeking is wanted.
+
 ## Dependency injection: wire it by hand
 
 We are doing dependency injection **conceptually**, not with a framework. No
@@ -267,7 +333,11 @@ helps keep, rather than a habit we hope to remember.
 3. Input is virtualized to **intent**; the kernel consumes intent, resolves
    relative turns against its own heading, and enforces the one-turn-per-tick /
    no-180° rules.
-4. Ports are types the kernel owns; adapters implement them; `app/` wires them.
-5. DI and ECS both start as **manual wiring** — no framework, no query engine —
+4. The game is a deterministic **fold over `(seed, intent stream)`**; recordings
+   are seed + tick-stamped intents (lossless, rebind-proof), which is what makes
+   replay, demos, ghosts, and bug-repro possible.
+5. Ports are types the kernel owns; adapters implement them; `app/` wires them.
+6. DI and ECS both start as **manual wiring** — no framework, no query engine —
    with seams that allow elaboration later.
-6. The pure→impure import ban is enforced by lint and fails the build.
+7. The pure→impure import ban is enforced by lint and fails the build — this is
+   also what guarantees replay determinism cannot silently diverge.
