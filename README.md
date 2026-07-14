@@ -64,6 +64,10 @@ src/app/       composition root: wires adapters into the kernel, runs the loop
 
 Controls: arrow keys / WASD to steer, Q/E to turn, Space to pause, R to restart.
 
+Power-ups: grab the amber **joystick** token to trade the four cardinal
+directions for **analog steering** — the heading then turns continuously (bounded
+per tick) instead of snapping 90°, so you carve curves rather than right angles.
+
 ## Status
 
 First architecture build. The pure kernel, adapters, composition root, enforced
