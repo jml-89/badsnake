@@ -25,7 +25,29 @@ GPU; **adapters** that provide those impure things; and a **composition root**
 that wires them together. A linter enforces the boundary — pure code physically
 cannot import impure code.
 
+## Development
+
+```sh
+npm install       # install dependencies
+npm run dev       # hot-reloading dev server
+npm test          # run the pure-kernel test suite (Vitest)
+npm run lint      # ESLint incl. the pure -> impure import boundary
+npm run typecheck # tsc --noEmit under strict settings
+npm run build     # typecheck + static production build to dist/
+```
+
+### Layout
+
+```
+src/core/      pure, deterministic kernel (game rules, RNG, ports)
+src/adapters/  impure implementations (three.js renderer, clock, keyboard)
+src/app/       composition root: wires adapters into the kernel, runs the loop
+```
+
+Controls: arrow keys / WASD to steer, Q/E to turn, Space to pause, R to restart.
+
 ## Status
 
-Pre-implementation. The documentation is the current deliverable; the project
-scaffold comes next.
+First architecture build. The pure kernel, adapters, composition root, enforced
+import boundary, tests, and CI/Pages workflows are in place. Gameplay is basic
+snake — the foundation is what this build is really about.
