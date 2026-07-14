@@ -1,4 +1,4 @@
-import { initialState, tick } from "../core/game/snake";
+import { initialState, tick, tickIntervalMs } from "../core/game/snake";
 import type { GameState } from "../core/game/types";
 import { createBrowserClock } from "../adapters/clock/browser-clock";
 import { createKeyboardInput } from "../adapters/input/keyboard";
@@ -11,7 +11,6 @@ import { createThreeRenderer } from "../adapters/render/three-renderer";
 
 const COLS = 20;
 const ROWS = 20;
-const TICK_MS = 120; // simulation cadence — the game's speed
 const SEED = 1; // fixed for now: deterministic first game
 
 const container = document.getElementById("app");
@@ -29,20 +28,24 @@ let state: GameState = initialState({ width: COLS, height: ROWS, seed: SEED });
 let accumulator = 0;
 let last = clock.now();
 
-// Fixed-timestep loop: simulation advances in whole TICK_MS steps regardless of
-// display refresh rate; render runs every frame. The clamp prevents a catch-up
+// Fixed-timestep loop, but the step is the difficulty curve: `tickIntervalMs`
+// shrinks as the score climbs, so the same loop runs slow-and-easy at the start
+// and quickens with every bite. The step is re-read each iteration so a food
+// eaten mid-frame speeds up the very next tick. The clamp prevents a catch-up
 // spiral after the tab was hidden.
 function frame(): void {
   const now = clock.now();
   accumulator = Math.min(accumulator + (now - last), 250);
   last = now;
 
-  while (accumulator >= TICK_MS) {
-    state = tick(state, input.drain(), TICK_MS);
-    accumulator -= TICK_MS;
+  let step = tickIntervalMs(state);
+  while (accumulator >= step) {
+    state = tick(state, input.drain(), step);
+    accumulator -= step;
+    step = tickIntervalMs(state);
   }
 
-  renderer.render(state, accumulator / TICK_MS);
+  renderer.render(state, accumulator / step);
   requestAnimationFrame(frame);
 }
 

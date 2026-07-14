@@ -60,9 +60,22 @@ export type GameState = {
   readonly mode: MoveMode;
   /**
    * The joystick power-up token on the board, or null once collected / not
-   * present. Walking the head over it switches `mode` to `analog`.
+   * present. Walking the head over it switches `mode` to `analog`. Power-ups are
+   * transient: they appear on a random cadence and vanish after a short while, so
+   * this is null far more often than not.
    */
   readonly powerup: Vec2 | null;
+  /**
+   * Tick at which the current power-up despawns (null when none is on the board).
+   * The countdown that creates the grab-it-now urgency.
+   */
+  readonly powerupExpiresAt: number | null;
+  /**
+   * Tick at which the next power-up should appear (meaningful only while
+   * `powerup` is null). Chosen from the seeded RNG, so the cadence is random yet
+   * fully deterministic under replay.
+   */
+  readonly powerupNextAt: number;
   readonly food: Vec2;
   readonly phase: Phase;
   readonly score: number;

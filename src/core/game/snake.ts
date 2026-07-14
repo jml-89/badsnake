@@ -25,6 +25,50 @@ const MAX_TURN = 16;
  *  exact overlap (distance 0) always does — keeping cardinal mode identical. */
 const HIT_RADIUS = 0.5;
 
+// --- Difficulty curve -----------------------------------------------------
+// The snake starts slow and forgiving, then quickens with every bite: each food
+// both grows the body (see the move step) and shortens the interval between
+// ticks. Speed is a game *rule*, so it lives here as pure data — the composition
+// root reads `tickIntervalMs(state)` to pace its loop; the kernel never touches a
+// clock. All values are milliseconds per simulation tick.
+
+/** Interval at score 0 — deliberately languid so the first moves are easy. */
+const START_TICK_MS = 200;
+/** The fastest the game gets; the curve clamps here so it stays playable. */
+const MIN_TICK_MS = 75;
+/** How much each food eaten shaves off the tick interval. */
+const SPEEDUP_PER_FOOD_MS = 9;
+
+/**
+ * The current simulation cadence in ms, as a pure function of how much has been
+ * eaten. Starts at START_TICK_MS and tightens by SPEEDUP_PER_FOOD_MS per food,
+ * floored at MIN_TICK_MS. This is the difficulty curve; the run loop paces itself
+ * by it instead of a constant.
+ */
+export function tickIntervalMs(state: GameState): number {
+  return Math.max(MIN_TICK_MS, START_TICK_MS - state.score * SPEEDUP_PER_FOOD_MS);
+}
+
+// --- Power-up cadence (in ticks) ------------------------------------------
+// Power-ups are not permanent fixtures: one appears after a random gap, lingers
+// for a short window, then vanishes if not grabbed — the disappearance is what
+// makes it urgent. Timing is measured in integer ticks (the deterministic
+// timeline) and drawn from the seeded RNG, so it replays exactly.
+
+/** How many ticks a power-up stays on the board before despawning. */
+const POWERUP_TTL_TICKS = 40;
+/** Shortest gap between one power-up leaving and the next arriving. */
+const POWERUP_MIN_GAP_TICKS = 60;
+/** Longest such gap. The actual gap is drawn uniformly in [MIN, MAX]. */
+const POWERUP_MAX_GAP_TICKS = 140;
+
+/** Draws a random spawn gap (in ticks) from the seeded RNG. */
+function nextGap(rngState: number): { readonly gap: number; readonly rngState: number } {
+  const { value, state } = nextRng(rngState);
+  const span = POWERUP_MAX_GAP_TICKS - POWERUP_MIN_GAP_TICKS + 1;
+  return { gap: POWERUP_MIN_GAP_TICKS + Math.floor(value * span), rngState: state };
+}
+
 function dist(a: Vec2, b: Vec2): number {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
@@ -48,6 +92,9 @@ export function initialState(options: NewGameOptions = {}): GameState {
     { x: cx - 1, y: cy },
     { x: cx - 2, y: cy },
   ];
+  // Schedule the first power-up a random gap out — the board starts clean so the
+  // player eases in before the first urgent token appears.
+  const { gap, rngState } = nextGap(seedRng(seed));
   const base: GameState = {
     width,
     height,
@@ -55,13 +102,15 @@ export function initialState(options: NewGameOptions = {}): GameState {
     heading: EAST,
     mode: "cardinal",
     powerup: null,
+    powerupExpiresAt: null,
+    powerupNextAt: gap,
     food: { x: 0, y: 0 },
     phase: "playing",
     score: 0,
     tick: 0,
-    rngState: seedRng(seed),
+    rngState,
   };
-  return placePowerup(placeFood(base));
+  return placeFood(base);
 }
 
 /** All board cells not occupied by the snake, food, or power-up. */
@@ -98,6 +147,37 @@ function placePowerup(state: GameState): GameState {
   const cell = free[Math.floor(value * free.length)]!;
   const powerup: Vec2 = { x: cell % state.width, y: Math.floor(cell / state.width) };
   return { ...state, powerup, rngState };
+}
+
+/**
+ * Advances the power-up lifecycle for the tick just computed (so `state.tick`
+ * already reflects the move). The single place that owns the appear → linger →
+ * vanish cycle:
+ *
+ * - `collected` — the head grabbed it this tick: clear the token and roll the
+ *   next random gap.
+ * - active and past its expiry — it timed out unclaimed: clear it and reschedule.
+ * - none present and the scheduled spawn tick has arrived — drop a fresh token
+ *   and start its short despawn countdown.
+ */
+function advancePowerup(state: GameState, collected: boolean): GameState {
+  if (collected) {
+    const { gap, rngState } = nextGap(state.rngState);
+    return { ...state, powerup: null, powerupExpiresAt: null, powerupNextAt: state.tick + gap, rngState };
+  }
+  if (state.powerup !== null) {
+    if (state.powerupExpiresAt !== null && state.tick >= state.powerupExpiresAt) {
+      const { gap, rngState } = nextGap(state.rngState);
+      return { ...state, powerup: null, powerupExpiresAt: null, powerupNextAt: state.tick + gap, rngState };
+    }
+    return state;
+  }
+  if (state.tick >= state.powerupNextAt) {
+    const spawned = placePowerup(state);
+    if (spawned.powerup === null) return state; // board full — try again next tick
+    return { ...spawned, powerupExpiresAt: state.tick + POWERUP_TTL_TICKS };
+  }
+  return state;
 }
 
 /**
@@ -219,5 +299,8 @@ export function tick(state: GameState, intents: readonly Intent[], _dtMs: number
     score: ate ? state.score + 1 : state.score,
   };
 
-  return ate ? placeFood(moved) : moved;
+  // Run the power-up clock on the post-move tick: grab, expiry, or timed spawn.
+  const withPowerup = advancePowerup(moved, gotPowerup);
+
+  return ate ? placeFood(withPowerup) : withPowerup;
 }
