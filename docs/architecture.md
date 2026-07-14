@@ -95,7 +95,8 @@ function frame(now: number) {
                                             // buffered intent stream (see Input)
     acc -= TICK_MS;
   }
-  render(state, acc / TICK_MS);   // impure; second arg is render-time alpha
+  render(state, acc / TICK_MS);   // impure sink; second arg is render-time
+                                  // alpha. Called directly — see "Rendering is a sink".
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
@@ -237,6 +238,28 @@ periodic state snapshots. These are a **cache/index** — the intent stream stay
 canonical, snapshots are derived. One authoritative representation; snapshots
 only where fast seeking is wanted.
 
+## Rendering is a sink, not a peer
+
+The renderer is the one adapter that is a pure **sink**: state (plus render-time
+`alpha`) flows *in*, pixels come *out*, and **nothing flows back** into the
+kernel. Because nothing flows back, the renderer cannot corrupt kernel purity or
+replay determinism — so we deliberately do **not** route it through a port
+interface for correctness. The run loop calls `render(state, alpha)` directly,
+and that is the intended shape, not a shortcut.
+
+The only thing a port would buy the renderer is swappability, and we keep that
+seam the cheap way: rendering lives in `adapters/render/`, the kernel never
+imports it, and the dependency runs one direction only (`render` reads `core`
+state types; `core` knows nothing of `render`). No interface ceremony beyond
+that.
+
+The deeper reason this is fine: **the orchestration problem in game development
+is everything that happens *before* the render.** Movement, collision, intent
+resolution, entity wiring, timing — that is where the complexity lives and where
+we invest structure (the pure kernel, ECS-lite, the intent stream). If that is
+organized well, the renderer's job collapses to *composing what it is handed*.
+We keep the renderer thin on purpose and spend our design budget upstream of it.
+
 ## Dependency injection: wire it by hand
 
 We are doing dependency injection **conceptually**, not with a framework. No
@@ -337,6 +360,8 @@ helps keep, rather than a habit we hope to remember.
    are seed + tick-stamped intents (lossless, rebind-proof), which is what makes
    replay, demos, ghosts, and bug-repro possible.
 5. Ports are types the kernel owns; adapters implement them; `app/` wires them.
+   The renderer is a **sink** — called directly, no port ceremony, kept thin;
+   the orchestration complexity lives upstream of it in the kernel.
 6. DI and ECS both start as **manual wiring** — no framework, no query engine —
    with seams that allow elaboration later.
 7. The pure→impure import ban is enforced by lint and fails the build — this is
