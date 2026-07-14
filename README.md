@@ -44,10 +44,18 @@ src/adapters/  impure implementations (three.js renderer, clock, keyboard)
 src/app/       composition root: wires adapters into the kernel, runs the loop
 ```
 
-Controls: arrow keys / WASD to steer, Q/E to turn, Space to pause, R to restart.
+Controls:
+
+- **Keyboard** — arrow keys / WASD to steer, Q/E to turn, Space to pause, R to
+  restart.
+- **Touch / mobile** — an on-screen D-pad (large, transparent, anchored
+  bottom-right where a thumb rests) steers; on-screen Pause and Restart buttons
+  stand in for the keys a phone doesn't have. Both devices feed the same
+  device-agnostic intent stream, so the kernel never knows which one you used.
 
 ## Status
 
-First architecture build. The pure kernel, adapters, composition root, enforced
-import boundary, tests, and CI/Pages workflows are in place. Gameplay is basic
-snake — the foundation is what this build is really about.
+First playable build. The pure kernel, adapters, composition root, enforced
+import boundary, tests, and CI/Pages workflows are in place, and the game is now
+playable on both desktop (keyboard) and mobile (on-screen D-pad + HUD buttons),
+with a live score readout and paused / game-over banners.
