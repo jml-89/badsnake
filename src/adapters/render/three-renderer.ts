@@ -90,13 +90,62 @@ export function createThreeRenderer(
     cells.add(mesh);
   }
 
+  // --- Render-time interpolation -------------------------------------------
+  // The simulation advances the body one cell per tick, but frames render far
+  // more often. Drawn raw, the snake teleports a whole cell each tick — fine on
+  // a cardinal grid, but jarring in analog mode, where you steer through a
+  // continuous angle yet the body lurches in discrete steps. So we glide: we
+  // keep the previous tick's body and the current one, and each frame draw the
+  // body `alpha` of the way between them (alpha ∈ [0,1] is the fraction of the
+  // way to the next tick, handed in by the run loop). This is the render-time
+  // `alpha` the architecture reserves for exactly this — it lives entirely here
+  // and never touches the kernel or replay determinism.
+  //
+  // We interpolate only across a normal single-tick advance while playing. On
+  // the first frame, a restart, a pause, death, or a multi-tick catch-up (after
+  // a hidden tab) the body snaps to its true positions rather than gliding
+  // across the gap.
+  let curSnake: readonly Vec2[] | null = null;
+  let prevSnake: readonly Vec2[] = [];
+  let curTick = -1;
+
+  function lerp(a: number, b: number, t: number): number {
+    return a + (b - a) * t;
+  }
+
   return {
-    render(state: GameState): void {
+    render(state: GameState, alpha: number): void {
+      // Advance the interpolation pair. Segment i glides from prevSnake[i] to
+      // curSnake[i]; since curSnake[i] === prevSnake[i-1] for a moving body,
+      // that's a one-cell forward crawl. When the body grew, curSnake is one
+      // longer — the extra (new tail) clamps to the old tail and stays put.
+      if (curSnake === null || state.phase !== "playing") {
+        prevSnake = state.snake;
+        curSnake = state.snake;
+        curTick = state.tick;
+      } else if (state.tick === curTick + 1) {
+        prevSnake = curSnake;
+        curSnake = state.snake;
+        curTick = state.tick;
+      } else if (state.tick !== curTick) {
+        // Reset or multi-tick jump: snap, don't glide across the gap.
+        prevSnake = state.snake;
+        curSnake = state.snake;
+        curTick = state.tick;
+      }
+      // else: same tick, still gliding — keep the pair, let alpha advance.
+
+      const t = Math.max(0, Math.min(1, alpha));
+      const cur = curSnake;
+      const prev = prevSnake;
+
       cells.clear();
       put(state.food, foodMaterial);
       if (state.powerup !== null) put(state.powerup, powerupMaterial);
-      state.snake.forEach((segment, index) => {
-        put(segment, index === 0 ? headMaterial : bodyMaterial);
+      cur.forEach((segment, index) => {
+        const from = prev[Math.min(index, prev.length - 1)] ?? segment;
+        const pos: Vec2 = { x: lerp(from.x, segment.x, t), y: lerp(from.y, segment.y, t) };
+        put(pos, index === 0 ? headMaterial : bodyMaterial);
       });
       renderer.render(scene, camera);
     },
