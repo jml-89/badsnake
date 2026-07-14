@@ -10,23 +10,59 @@ export type Turn = "left" | "right";
 
 /**
  * Device-agnostic player intent. The kernel consumes intents, never keycodes.
- * `steer` is absolute ("face north"); `turn` is relative ("turn left from the
- * current heading") and is resolved by the kernel, which owns the heading.
+ *
+ * - `steer` is absolute at cardinal resolution ("face north"), natural for arrow
+ *   keys and d-pads.
+ * - `steerAngle` is absolute at full resolution — a heading *index* (see
+ *   `heading.ts`), natural for an analog stick. The device does the trig and
+ *   hands the kernel an integer, so determinism is preserved. In cardinal mode
+ *   the kernel snaps it to the nearest cardinal.
+ * - `turn` is relative ("turn left from the current heading") and is resolved by
+ *   the kernel, which owns the heading.
  */
 export type Intent =
   | { readonly kind: "steer"; readonly direction: Direction }
+  | { readonly kind: "steerAngle"; readonly index: number }
   | { readonly kind: "turn"; readonly turn: Turn }
   | { readonly kind: "pause" }
   | { readonly kind: "restart" };
 
 export type Phase = "playing" | "paused" | "dead";
 
+/**
+ * How the snake steers.
+ *
+ * - `cardinal` — the original four-direction snake. The heading stays pinned to a
+ *   cardinal angle and moves in exact 1-cell axis steps.
+ * - `analog` — unlocked by the joystick power-up. The heading can point in any of
+ *   the discrete angles and rotates by a bounded amount per tick.
+ *
+ * Both modes share one representation (a continuous body + an angle-index
+ * heading), so the switch flips a field and needs no conversion.
+ */
+export type MoveMode = "cardinal" | "analog";
+
 export type GameState = {
   readonly width: number;
   readonly height: number;
-  /** Body cells, head first. */
+  /**
+   * Body segments, head first. Cells are integer-valued in cardinal mode and
+   * may be sub-cell floats in analog mode — the renderer and collision treat
+   * them uniformly as continuous positions.
+   */
   readonly snake: readonly Vec2[];
-  readonly heading: Direction;
+  /**
+   * Facing direction as an angle index in [0, HEADINGS) — see `heading.ts`. The
+   * quantized generalization of a cardinal `Direction`; kept integer so the game
+   * stays a deterministic fold.
+   */
+  readonly heading: number;
+  readonly mode: MoveMode;
+  /**
+   * The joystick power-up token on the board, or null once collected / not
+   * present. Walking the head over it switches `mode` to `analog`.
+   */
+  readonly powerup: Vec2 | null;
   readonly food: Vec2;
   readonly phase: Phase;
   readonly score: number;

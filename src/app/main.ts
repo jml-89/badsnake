@@ -2,6 +2,8 @@ import { initialState, tick } from "../core/game/snake";
 import type { GameState } from "../core/game/types";
 import { createBrowserClock } from "../adapters/clock/browser-clock";
 import { createKeyboardInput } from "../adapters/input/keyboard";
+import { createTouchInput } from "../adapters/input/touch";
+import { mergeInputs } from "../adapters/input/merge";
 import { createThreeRenderer } from "../adapters/render/three-renderer";
 
 // --- Composition root: the only place that touches both sides and owns real
@@ -18,7 +20,9 @@ if (container === null) {
 }
 
 const clock = createBrowserClock();
-const input = createKeyboardInput();
+// Two devices, one intent stream: keyboard everywhere, on-screen joystick +
+// buttons on touch devices (the touch adapter mounts nothing on desktop).
+const input = mergeInputs([createKeyboardInput(), createTouchInput()]);
 const renderer = createThreeRenderer(container, COLS, ROWS);
 
 let state: GameState = initialState({ width: COLS, height: ROWS, seed: SEED });

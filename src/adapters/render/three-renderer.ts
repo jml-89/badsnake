@@ -8,6 +8,7 @@ const COLORS = {
   head: 0x7dd3fc,
   body: 0x38bdf8,
   food: 0xf43f5e,
+  powerup: 0xfacc15, // amber — the joystick token that unlocks analog steering
 } as const;
 
 /**
@@ -54,6 +55,7 @@ export function createThreeRenderer(
   const headMaterial = new THREE.MeshBasicMaterial({ color: COLORS.head, side: THREE.DoubleSide });
   const bodyMaterial = new THREE.MeshBasicMaterial({ color: COLORS.body, side: THREE.DoubleSide });
   const foodMaterial = new THREE.MeshBasicMaterial({ color: COLORS.food, side: THREE.DoubleSide });
+  const powerupMaterial = new THREE.MeshBasicMaterial({ color: COLORS.powerup, side: THREE.DoubleSide });
 
   const cells = new THREE.Group();
   scene.add(cells);
@@ -68,6 +70,7 @@ export function createThreeRenderer(
     render(state: GameState): void {
       cells.clear();
       put(state.food, foodMaterial);
+      if (state.powerup !== null) put(state.powerup, powerupMaterial);
       state.snake.forEach((segment, index) => {
         put(segment, index === 0 ? headMaterial : bodyMaterial);
       });
@@ -81,6 +84,7 @@ export function createThreeRenderer(
       headMaterial.dispose();
       bodyMaterial.dispose();
       foodMaterial.dispose();
+      powerupMaterial.dispose();
       renderer.dispose();
       renderer.domElement.remove();
     },

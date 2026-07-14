@@ -64,6 +64,14 @@ src/app/       composition root: wires adapters into the kernel, runs the loop
 
 Controls: arrow keys / WASD to steer, Q/E to turn, Space to pause, R to restart.
 
+On touch devices an on-screen **joystick** (bottom-left) plus pause / restart
+buttons (bottom-right) appear automatically; desktop stays keyboard-only.
+
+Power-ups: grab the amber **joystick** token to trade the four cardinal
+directions for **analog steering** — the heading then turns continuously (bounded
+per tick) instead of snapping 90°, so you carve curves rather than right angles.
+The on-screen joystick points the snake directly once analog is unlocked.
+
 ## Status
 
 First architecture build. The pure kernel, adapters, composition root, enforced
