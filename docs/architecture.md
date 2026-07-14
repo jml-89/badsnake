@@ -45,7 +45,7 @@ src/
   adapters/        # IMPURE. implements ports against real platform capabilities.
     render/        #   three.js scene, orthographic camera, meshes
     clock/         #   performance.now-based time sources
-    input/         #   keyboard / DOM input
+    input/         #   devices + bindings → emits intents (never raw keycodes)
     rng/           #   seeded RNG implementation
     storage/       #   high scores etc.
   app/             # COMPOSITION ROOT. the only place allowed to import both sides.
@@ -91,7 +91,8 @@ function frame(now: number) {
   acc += now - last; last = now;
   acc = Math.min(acc, 250);       // clamp: no catch-up spiral after a hidden tab
   while (acc >= TICK_MS) {
-    state = tick(state, inputs, TICK_MS);   // PURE kernel step
+    state = tick(state, intents, TICK_MS);  // PURE kernel step; `intents` is the
+                                            // buffered intent stream (see Input)
     acc -= TICK_MS;
   }
   render(state, acc / TICK_MS);   // impure; second arg is render-time alpha
@@ -107,6 +108,68 @@ and non-deterministic, so the kernel never calls it. Random needs (food
 placement, later: enemy behaviour) go through an **RNG port** — a seeded
 generator passed in. Same seed → same game, which makes runs reproducible and
 tests exact.
+
+## Input is virtualized: intent, not keystrokes
+
+Input is a dependency like time and randomness, but it deserves its own
+treatment because it is almost always **virtualized at least once**. The kernel
+must consume the player's *intent*, never a device event. This keeps the kernel
+device-agnostic and — the real payoff — makes input trivial to drive in tests
+without dragging in keycodes, gamepads, or mappings.
+
+We model it as three layers on the impure side, with the kernel behind all of
+them. This is the *expression of intent → intent → carrying out intent* split:
+
+1. **Devices** (adapter, impure) — keyboard, gamepad, mouse, accelerometer. Each
+   emits its own raw signals (a keycode, a stick axis, a tilt vector). This is
+   the *expression* of intent, and it is the only layer that knows a device
+   exists.
+2. **Bindings / mapping** (data-driven) — a keymap that translates raw device
+   signals into intents. Remapping and multi-device support live here. Because a
+   binding set is just **data** (`ArrowUp → Steer(North)`, `stick-left →
+   Turn(Left)`), it is serializable (dovetails with save/load) and multiple
+   devices simply merge into one intent stream.
+3. **Intent** (the port vocabulary) — a small, **device-agnostic** semantic
+   language of what the player *wants*: e.g. `Steer(Dir)`, `Turn(Left|Right)`,
+   `Pause`, `Confirm`, `Restart`. This is the port boundary. The kernel never
+   sees a keycode, a stick, or a tilt — only intent.
+
+The kernel then **carries out** the intent under game rules (pure).
+
+### Absolute vs relative intent — resolved in the kernel
+
+Directional input has two semantic flavours, and both must be supported cleanly:
+
+- **Absolute** — "face North" (natural for arrow keys, d-pads).
+- **Relative** — "turn left from the current heading" (natural for two-button
+  controls, single-hand play, an accelerometer).
+
+A relative intent can only be resolved against the **current heading**, which is
+kernel state. Resolving it in the mapping layer would leak game state outward and
+break the boundary. So: the intent vocabulary carries **both** absolute
+(`Steer(Dir)`) and relative (`Turn(Left|Right)`) intents, and the **kernel**
+resolves the relative ones (it owns the heading). The mapping layer stays
+stateless, and every controller style is supported without special-casing.
+
+### Intents are buffered; two game rules live in the kernel
+
+Intents are collected per frame and handed to `tick` as a **buffer** (the
+`intents` argument in the loop above), drained per simulation tick. Two
+snake-specific rules follow, and both belong in the **pure kernel**, not in
+device code — which is only possible because intent arrives as data:
+
+- **At most one heading change per tick.**
+- **Reject illegal 180° reversals.**
+
+Together these kill the classic bug where pressing up-then-left within a single
+tick reverses the snake into itself. The kernel applies the first *legal* turn in
+the buffer per tick.
+
+### Testing
+
+Tests feed a sequence of intents directly — `[Steer.North, Pause, Steer.East]`
+or `[Turn.Left, Turn.Left]` at a known state — with **no device, no keymap, no
+keycode** anywhere in the test. That is the whole point of virtualizing input.
 
 ## Dependency injection: wire it by hand
 
@@ -189,15 +252,22 @@ helps keep, rather than a habit we hope to remember.
 
 - **Vitest** over the pure kernel: movement, collision, growth, wrap/death
   conditions, scoring, and seeded-RNG determinism (same seed → same sequence).
+- Input is tested by feeding **intent sequences** straight into `tick` — no
+  device, keymap, or keycode in the test (see Input).
 - Adapters get thin-to-no unit tests; they are exercised by integration/manual
-  runs. The whole reason the kernel is easy to test is that time and randomness
-  arrive as arguments — **no mocking of clocks or the DOM required**.
+  runs. The whole reason the kernel is easy to test is that time, randomness, and
+  input all arrive as arguments — **no mocking of clocks, devices, or the DOM
+  required**.
 
 ## Summary of the load-bearing rules
 
 1. Game logic is pure and lives in `core/`.
-2. Time and randomness are injected as data/ports — the kernel never reads them.
-3. Ports are types the kernel owns; adapters implement them; `app/` wires them.
-4. DI and ECS both start as **manual wiring** — no framework, no query engine —
+2. Time, randomness, and input are injected as data/ports — the kernel never
+   reads a clock, calls `Math.random`, or touches a device.
+3. Input is virtualized to **intent**; the kernel consumes intent, resolves
+   relative turns against its own heading, and enforces the one-turn-per-tick /
+   no-180° rules.
+4. Ports are types the kernel owns; adapters implement them; `app/` wires them.
+5. DI and ECS both start as **manual wiring** — no framework, no query engine —
    with seams that allow elaboration later.
-5. The pure→impure import ban is enforced by lint and fails the build.
+6. The pure→impure import ban is enforced by lint and fails the build.
