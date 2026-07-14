@@ -1,21 +1,27 @@
 name: Deploy to GitHub Pages
 
+# Production deploy. Publishes main's build to the ROOT of the `gh-pages` branch.
+# PR previews (see pr-preview.yml) live in the pr-preview/ subfolder of the same
+# branch, so this deploy must NOT wipe that folder — hence clean-exclude.
+#
+# ONE-TIME SETUP (repo Settings -> Pages): set Source to
+# "Deploy from a branch" -> branch `gh-pages` -> folder `/ (root)`.
+# The site stays at https://jml-89.github.io/badsnake/.
+
 on:
   push:
     branches: [main]
   workflow_dispatch:
 
 permissions:
-  contents: read
-  pages: write
-  id-token: write
+  contents: write # push the built site to the gh-pages branch
 
 concurrency:
-  group: pages
+  group: pages-deploy
   cancel-in-progress: true
 
 jobs:
-  build:
+  deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -25,16 +31,11 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run build
-      - uses: actions/upload-pages-artifact@v3
+      - name: Publish to gh-pages (root)
+        uses: JamesIves/github-pages-deploy-action@v4
         with:
-          path: dist
-
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-    steps:
-      - id: deployment
-        uses: actions/deploy-pages@v4
+          folder: dist
+          branch: gh-pages
+          clean: true
+          clean-exclude: |
+            pr-preview/
