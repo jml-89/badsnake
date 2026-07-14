@@ -45,10 +45,15 @@ export function createThreeRenderer(
   scene.add(new THREE.LineSegments(gridGeometry, gridMaterial));
 
   // Shared, reused resources — cells are cheap Mesh objects over these.
+  // DoubleSide is load-bearing: the orthographic camera below is built with an
+  // inverted Y (top=0, bottom=rows) to get a top-left origin, which flips
+  // triangle winding. With the default FrontSide, back-face culling would
+  // discard every cell — the grid lines would still show, so the board reads as
+  // an empty black screen. DoubleSide renders the quads regardless of winding.
   const cellGeometry = new THREE.PlaneGeometry(0.85, 0.85);
-  const headMaterial = new THREE.MeshBasicMaterial({ color: COLORS.head });
-  const bodyMaterial = new THREE.MeshBasicMaterial({ color: COLORS.body });
-  const foodMaterial = new THREE.MeshBasicMaterial({ color: COLORS.food });
+  const headMaterial = new THREE.MeshBasicMaterial({ color: COLORS.head, side: THREE.DoubleSide });
+  const bodyMaterial = new THREE.MeshBasicMaterial({ color: COLORS.body, side: THREE.DoubleSide });
+  const foodMaterial = new THREE.MeshBasicMaterial({ color: COLORS.food, side: THREE.DoubleSide });
 
   const cells = new THREE.Group();
   scene.add(cells);

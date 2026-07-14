@@ -34,7 +34,25 @@ npm test          # run the pure-kernel test suite (Vitest)
 npm run lint      # ESLint incl. the pure -> impure import boundary
 npm run typecheck # tsc --noEmit under strict settings
 npm run build     # typecheck + static production build to dist/
+npm run repro     # headless-browser smoke test of the built dist/ (see CLAUDE.md)
 ```
+
+### Playing a version from a feature branch
+
+`main` publishes to <https://jml-89.github.io/badsnake/>. To try work that isn't
+on `main` yet:
+
+- **Locally** — `git checkout <branch> && npm install && npm run dev`, then open
+  the printed `localhost` URL. For the exact production build instead of the dev
+  server: `npm run build && npm run preview`.
+- **Shareable link** — open a pull request. Every PR is built and published to a
+  preview URL and a bot comments the link on the PR:
+  `https://jml-89.github.io/badsnake/pr-preview/pr-<N>/`. The preview updates on
+  each push and is removed when the PR closes.
+
+> One-time repo setup for previews: **Settings → Pages → Source = "Deploy from a
+> branch" → `gh-pages` / `(root)`.** Both the production and preview deploys
+> publish to that branch.
 
 ### Layout
 

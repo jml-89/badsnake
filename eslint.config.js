@@ -17,6 +17,16 @@ export default tseslint.config(
     },
   },
 
+  // --- Tooling scripts: Node + in-page (page.evaluate) globals ---
+  // Not part of the app; repro.mjs runs under Node but also contains a callback
+  // that executes inside the browser page, so it references DOM globals too.
+  {
+    files: ["scripts/**/*.mjs"],
+    languageOptions: {
+      globals: { process: "readonly", console: "readonly", document: "readonly" },
+    },
+  },
+
   // --- Architecture boundary: the pure -> impure import ban ---
   // Impure code may import pure code freely; pure code may not import
   // impure code. Enforced mechanically; a violation fails the build.

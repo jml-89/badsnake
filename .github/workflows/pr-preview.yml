@@ -1,0 +1,42 @@
+name: PR Preview
+
+# Builds each pull request and publishes it to the gh-pages branch under
+# pr-preview/pr-<N>/, then comments the live URL on the PR:
+#   https://jml-89.github.io/badsnake/pr-preview/pr-<N>/
+# The relative `base: "./"` in vite.config.ts is what lets the same build run
+# from that nested subpath unchanged. The preview is removed when the PR closes.
+#
+# Depends on the same one-time Pages setup as pages.yml (Source = branch
+# gh-pages, folder /root). Previews only run for branches in this repo, not
+# forks — forked PRs can't get the write token, by GitHub's design.
+
+on:
+  pull_request:
+    types: [opened, reopened, synchronize, closed]
+
+permissions:
+  contents: write # push the preview into the gh-pages branch
+  pull-requests: write # post/update the preview-link comment
+
+concurrency:
+  group: pr-preview-${{ github.event.number }}
+  cancel-in-progress: true
+
+jobs:
+  preview:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: npm
+      - if: github.event.action != 'closed'
+        run: npm ci
+      - if: github.event.action != 'closed'
+        run: npm run build
+      - name: Deploy / update / tear down preview
+        uses: rossjrw/pr-preview-action@v1
+        with:
+          source-dir: dist
+          # publishes to gh-pages/pr-preview/pr-<N>/ and cleans up on close
