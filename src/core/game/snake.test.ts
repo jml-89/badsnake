@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { initialState, tick } from "./snake";
+import { initialState, tick, tickIntervalMs } from "./snake";
 import { EAST, NORTH, QUARTER, SOUTH, WEST, signedDelta } from "./heading";
 import type { GameState, Intent, Vec2 } from "./types";
 
@@ -84,11 +84,14 @@ describe("snake kernel", () => {
     expect(resumed.phase).toBe("playing");
   });
 
-  it("starts in cardinal mode on a cardinal heading", () => {
+  it("starts in cardinal mode on a cardinal heading, with no power-up yet", () => {
     const s0 = initialState({ width: 10, height: 10, seed: 1 });
     expect(s0.mode).toBe("cardinal");
     expect(s0.heading).toBe(EAST);
-    expect(s0.powerup).not.toBeNull();
+    // Power-ups now appear on a timer, so the board starts clean with the first
+    // spawn scheduled for a future tick.
+    expect(s0.powerup).toBeNull();
+    expect(s0.powerupNextAt).toBeGreaterThan(0);
   });
 
   it("collecting the joystick switches to analog and clears the token", () => {
@@ -162,6 +165,56 @@ describe("snake kernel", () => {
     expect(moved).toBeGreaterThan(0); // turned toward south (clockwise)
     expect(after.heading).not.toBe(SOUTH); // but did not snap there
     expect(after.heading).not.toBe(EAST);
+  });
+
+  it("starts slow and speeds up as the score climbs, then clamps", () => {
+    const s0 = initialState({ width: 10, height: 10, seed: 1 });
+    const slow = tickIntervalMs(s0);
+    const fast = tickIntervalMs({ ...s0, score: 5 });
+    const capped = tickIntervalMs({ ...s0, score: 1000 });
+    expect(fast).toBeLessThan(slow); // each food tightens the interval
+    expect(capped).toBeGreaterThan(0); // never hits zero...
+    expect(capped).toBeLessThan(fast); // ...but does keep dropping to a floor
+    // The floor holds: an even higher score can't go below it.
+    expect(tickIntervalMs({ ...s0, score: 5000 })).toBe(capped);
+  });
+
+  it("spawns a power-up when its scheduled tick arrives, then despawns it", () => {
+    const board = { width: 12, height: 12, seed: 5 } as const;
+    // Steer the snake in a tight loop so it survives long enough to observe a
+    // full appear → vanish cycle without hitting a wall.
+    let s = initialState(board);
+    const spawnTick = s.powerupNextAt;
+    let sawPowerup = false;
+    let sawItVanish = false;
+    let seenSpawnTick = -1;
+    // Circle the snake by turning right every few ticks; plenty of room on 12x12.
+    for (let i = 0; i < spawnTick + 120 && s.phase === "playing"; i++) {
+      s = tick(s, i % 4 === 0 ? [{ kind: "turn", turn: "right" }] : NONE, 120);
+      if (s.powerup !== null && !sawPowerup) {
+        sawPowerup = true;
+        seenSpawnTick = s.tick;
+        expect(s.powerupExpiresAt).not.toBeNull();
+      }
+      if (sawPowerup && s.powerup === null && !sawItVanish) sawItVanish = true;
+    }
+    expect(sawPowerup).toBe(true);
+    expect(seenSpawnTick).toBeGreaterThanOrEqual(spawnTick);
+    expect(sawItVanish).toBe(true); // it disappeared on its own — the urgency
+  });
+
+  it("reschedules a fresh power-up after one is collected", () => {
+    const base = initialState({ width: 10, height: 10, seed: 1 });
+    const head = base.snake[0]!;
+    const staged: GameState = {
+      ...base,
+      powerup: { x: head.x + 1, y: head.y },
+      powerupExpiresAt: base.tick + 40,
+    };
+    const after = tick(staged, NONE, 120);
+    expect(after.powerup).toBeNull();
+    expect(after.powerupExpiresAt).toBeNull();
+    expect(after.powerupNextAt).toBeGreaterThan(after.tick); // next one is scheduled ahead
   });
 
   it("stays a deterministic fold in analog mode", () => {

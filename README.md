@@ -67,10 +67,19 @@ Controls: arrow keys / WASD to steer, Q/E to turn, Space to pause, R to restart.
 On touch devices an on-screen **joystick** (bottom-left) plus pause / restart
 buttons (bottom-right) appear automatically; desktop stays keyboard-only.
 
-Power-ups: grab the amber **joystick** token to trade the four cardinal
-directions for **analog steering** — the heading then turns continuously (bounded
-per tick) instead of snapping 90°, so you carve curves rather than right angles.
-The on-screen joystick points the snake directly once analog is unlocked.
+Difficulty curve: the snake starts slow and forgiving, and **every food eaten
+makes it longer and faster** — the tick interval tightens with each bite down to
+a floor, so the board gets more frantic the better you do.
+
+Power-ups: the amber **joystick** token appears on a random cadence and
+**vanishes after a few seconds** if you don't reach it — grab it in time to trade
+the four cardinal directions for **analog steering**, so the heading turns
+continuously (bounded per tick) instead of snapping 90° and you carve curves
+rather than right angles. The on-screen joystick points the snake directly once
+analog is unlocked.
+
+The board edge is lethal — leaving it kills the snake — so it's framed in a
+**danger red** border.
 
 ## Status
 

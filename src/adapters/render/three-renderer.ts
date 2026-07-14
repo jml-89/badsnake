@@ -5,11 +5,15 @@ import type { Renderer } from "../../core/ports/renderer";
 const COLORS = {
   background: 0x0a0a0a,
   grid: 0x1c1c1c,
+  wall: 0xdc2626, // danger red — the board edge is lethal, so mark it clearly
   head: 0x7dd3fc,
   body: 0x38bdf8,
   food: 0xf43f5e,
   powerup: 0xfacc15, // amber — the joystick token that unlocks analog steering
 } as const;
+
+/** Thickness of the danger border, in world (cell) units. */
+const WALL_THICKNESS = 0.18;
 
 /**
  * A deliberately thin three.js renderer. It stands up a genuine 3D scene viewed
@@ -45,6 +49,26 @@ export function createThreeRenderer(
   gridGeometry.setAttribute("position", new THREE.Float32BufferAttribute(gridPoints, 3));
   scene.add(new THREE.LineSegments(gridGeometry, gridMaterial));
 
+  // Danger border. Walls are lethal (leaving [0,cols]x[0,rows] kills the snake),
+  // but nothing on screen said so — this frames the play area in a warning red so
+  // the deadly edge reads at a glance. Static geometry: built once, never cleared
+  // with the per-frame cells. DoubleSide for the same inverted-camera winding
+  // reason the cell meshes need it (see below).
+  const wallMaterial = new THREE.MeshBasicMaterial({ color: COLORS.wall, side: THREE.DoubleSide });
+  const wallGroup = new THREE.Group();
+  const t = WALL_THICKNESS;
+  function addBar(w: number, h: number, cx: number, cy: number): void {
+    const bar = new THREE.Mesh(new THREE.PlaneGeometry(w, h), wallMaterial);
+    bar.position.set(cx, cy, 0);
+    wallGroup.add(bar);
+  }
+  // Horizontal bars overhang by `t` so the corners meet cleanly.
+  addBar(cols + t, t, cols / 2, 0); // top edge (y=0)
+  addBar(cols + t, t, cols / 2, rows); // bottom edge (y=rows)
+  addBar(t, rows + t, 0, rows / 2); // left edge (x=0)
+  addBar(t, rows + t, cols, rows / 2); // right edge (x=cols)
+  scene.add(wallGroup);
+
   // Shared, reused resources — cells are cheap Mesh objects over these.
   // DoubleSide is load-bearing: the orthographic camera below is built with an
   // inverted Y (top=0, bottom=rows) to get a top-left origin, which flips
@@ -78,6 +102,11 @@ export function createThreeRenderer(
     },
     dispose(): void {
       cells.clear();
+      for (const bar of wallGroup.children) {
+        if (bar instanceof THREE.Mesh) bar.geometry.dispose();
+      }
+      wallGroup.clear();
+      wallMaterial.dispose();
       cellGeometry.dispose();
       gridGeometry.dispose();
       gridMaterial.dispose();
