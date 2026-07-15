@@ -84,23 +84,54 @@ The fixed-timestep run loop (owned by `app/`, refresh-rate independent,
 background-tab safe via the accumulator clamp):
 
 ```ts
-const TICK_MS = 120;              // simulation cadence — the game's speed
+const SIM_DT_MS = 50;            // fixed, FINE step — a subdivision of a cell,
+                                 // not the game's speed (see below)
 let acc = 0, last = performance.now();
 
 function frame(now: number) {
   acc += now - last; last = now;
   acc = Math.min(acc, 250);       // clamp: no catch-up spiral after a hidden tab
-  while (acc >= TICK_MS) {
-    state = tick(state, intents, TICK_MS);  // PURE kernel step; `intents` is the
-                                            // buffered intent stream (see Input)
-    acc -= TICK_MS;
+  while (acc >= SIM_DT_MS) {
+    state = tick(state, intents, SIM_DT_MS); // PURE kernel step; `intents` is the
+                                             // buffered intent stream (see Input)
+    acc -= SIM_DT_MS;
   }
-  render(state, acc / TICK_MS);   // impure sink; second arg is render-time
+  render(state, acc / SIM_DT_MS); // impure sink; second arg is render-time
                                   // alpha. Called directly — see "Rendering is a sink".
   requestAnimationFrame(frame);
 }
 requestAnimationFrame(frame);
 ```
+
+**The step is fixed and fine; speed is a velocity, not the step.** An earlier
+version made the tick interval itself the movement speed (one cell per tick,
+interval shrinking with score). That welds three unrelated jobs — how far the
+snake moves, how often it can steer, and how often input is serviced — onto one
+number, which is what made analog steering feel laggy and stepped. Now the step
+is a small constant and the difficulty curve is a **velocity** (cells/ms) the
+kernel reads inside movement. One authoritative timeline; steering and input are
+serviced every fine tick.
+
+### Movement is a per-mode strategy; collision is one uniform system
+
+These are different computations and are kept apart — you do **not** add a clock
+per concern. Within the single sim tick, an ordered pipeline runs
+`steer → move → collide`:
+
+- **Movement** is per-entity, per-mode. Cardinal is *quantized*: distance accrues
+  and commits an exact integer cell, so the grid snap is guaranteed regardless of
+  the timestep. Analog *integrates* `velocity·dt` into a continuous head, laying
+  body nodes at ~1-cell arc spacing. Different strategies, same output: a
+  continuous position on a polyline.
+- **Collision** is one distance-based system over that uniform representation. It
+  does not know or care how an entity moved — which is exactly what lets a future
+  moving hazard (e.g. a falling bullet) drop in as another collider without
+  touching either movement mode.
+
+Coarser or finer rhythms (an AI that thinks every N ticks; swept collision for a
+fast mover) are **subdivisions of this one timeline** — counters and inner
+substeps — never a second wall-clock. The only clock off the sim timeline is
+render, and it is a pure sink (below), so it cannot corrupt determinism.
 
 ## Randomness is a dependency too
 

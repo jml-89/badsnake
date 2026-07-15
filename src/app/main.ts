@@ -1,4 +1,4 @@
-import { initialState, tick, tickIntervalMs } from "../core/game/snake";
+import { initialState, tick, SIM_DT_MS } from "../core/game/snake";
 import type { GameState } from "../core/game/types";
 import { createBrowserClock } from "../adapters/clock/browser-clock";
 import { createKeyboardInput } from "../adapters/input/keyboard";
@@ -28,24 +28,22 @@ let state: GameState = initialState({ width: COLS, height: ROWS, seed: SEED });
 let accumulator = 0;
 let last = clock.now();
 
-// Fixed-timestep loop, but the step is the difficulty curve: `tickIntervalMs`
-// shrinks as the score climbs, so the same loop runs slow-and-easy at the start
-// and quickens with every bite. The step is re-read each iteration so a food
-// eaten mid-frame speeds up the very next tick. The clamp prevents a catch-up
-// spiral after the tab was hidden.
+// Fixed-timestep loop on a single fine step (SIM_DT_MS). Movement speed lives
+// inside the kernel now as a velocity (the difficulty curve), so the step stays
+// constant while the snake still starts slow and quickens with every bite. The
+// leftover accumulator becomes the render-time `alpha` for interpolation. The
+// clamp prevents a catch-up spiral after the tab was hidden.
 function frame(): void {
   const now = clock.now();
   accumulator = Math.min(accumulator + (now - last), 250);
   last = now;
 
-  let step = tickIntervalMs(state);
-  while (accumulator >= step) {
-    state = tick(state, input.drain(), step);
-    accumulator -= step;
-    step = tickIntervalMs(state);
+  while (accumulator >= SIM_DT_MS) {
+    state = tick(state, input.drain(), SIM_DT_MS);
+    accumulator -= SIM_DT_MS;
   }
 
-  renderer.render(state, accumulator / step);
+  renderer.render(state, accumulator / SIM_DT_MS);
   requestAnimationFrame(frame);
 }
 

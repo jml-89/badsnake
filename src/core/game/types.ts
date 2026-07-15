@@ -46,17 +46,49 @@ export type GameState = {
   readonly width: number;
   readonly height: number;
   /**
-   * Body segments, head first. Cells are integer-valued in cardinal mode and
-   * may be sub-cell floats in analog mode — the renderer and collision treat
-   * them uniformly as continuous positions.
+   * Body nodes, head first: `snake[0]` is the head, the rest trail behind it at
+   * roughly one-cell arc spacing. In cardinal mode every node is an integer cell
+   * (the head snaps cell to cell); in analog mode `snake[0]` is a continuous
+   * sub-cell position and the trailing nodes are laid down along the path. The
+   * renderer and collision treat the list uniformly as a continuous polyline.
    */
   readonly snake: readonly Vec2[];
   /**
    * Facing direction as an angle index in [0, HEADINGS) — see `heading.ts`. The
    * quantized generalization of a cardinal `Direction`; kept integer so the game
-   * stays a deterministic fold.
+   * stays a deterministic fold. In cardinal mode this is the *committed* travel
+   * heading — it only changes when the head commits a new cell.
    */
   readonly heading: number;
+  /**
+   * Cardinal steering is buffered here: the first legal turn requested since the
+   * last cell commit, latched until that commit consumes it (null when none is
+   * pending). This is what lets the fine simulation step service input every
+   * tick without dropping or double-applying a turn between cell commits. Unused
+   * in analog mode, where the heading rotates freely each tick.
+   */
+  readonly pendingHeading: number | null;
+  /**
+   * Distance travelled toward the next cell commit, in cells [0, 1). Cardinal
+   * movement is quantized: this accumulates at the current speed each tick and
+   * commits exactly one integer cell whenever it crosses 1 — which is what keeps
+   * the grid snap exact regardless of the timestep. Analog movement is
+   * continuous and does not use it.
+   */
+  readonly cellProgress: number;
+  /**
+   * Target body length in cells. Growth bumps this on eating; each movement step
+   * trims the trailing nodes back down to it. Decoupled from `snake.length`
+   * because analog can carry a fractional lead node ahead of the last commit.
+   */
+  readonly lengthCells: number;
+  /**
+   * Accumulated simulation time in milliseconds — the sum of every `dt` folded
+   * in so far. Power-up scheduling is expressed against this (not the integer
+   * tick) so its cadence is wall-clock-stable no matter the timestep, while
+   * staying a deterministic function of the fixed `dt` data.
+   */
+  readonly clockMs: number;
   readonly mode: MoveMode;
   /**
    * The joystick power-up token on the board, or null once collected / not
@@ -66,14 +98,15 @@ export type GameState = {
    */
   readonly powerup: Vec2 | null;
   /**
-   * Tick at which the current power-up despawns (null when none is on the board).
-   * The countdown that creates the grab-it-now urgency.
+   * Simulation time (ms, see `clockMs`) at which the current power-up despawns
+   * (null when none is on the board). The countdown that creates the grab-it-now
+   * urgency.
    */
   readonly powerupExpiresAt: number | null;
   /**
-   * Tick at which the next power-up should appear (meaningful only while
-   * `powerup` is null). Chosen from the seeded RNG, so the cadence is random yet
-   * fully deterministic under replay.
+   * Simulation time (ms, see `clockMs`) at which the next power-up should appear
+   * (meaningful only while `powerup` is null). Chosen from the seeded RNG, so the
+   * cadence is random yet fully deterministic under replay.
    */
   readonly powerupNextAt: number;
   readonly food: Vec2;

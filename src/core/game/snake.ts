@@ -12,61 +12,80 @@ import {
   wrap,
 } from "./heading";
 
-// --- Tunables -------------------------------------------------------------
+// --- The simulation timeline ----------------------------------------------
+// There is ONE authoritative clock: a fixed-timestep integer tick. The
+// composition root advances the world by SIM_DT_MS of simulated time per tick
+// (see main.ts) and never anything else — render interpolation and power-up
+// cadence are derived from this single timeline, so the game stays a
+// deterministic fold. The step is deliberately fine (well under a cell of
+// travel) so steering and input are serviced many times per cell.
+
+/** Milliseconds of simulated time advanced per fixed tick. */
+export const SIM_DT_MS = 50;
+
+// --- Steering tunables -----------------------------------------------------
 // A heading is one of HEADINGS discrete angles; these are expressed in those
-// units. See heading.ts.
+// units, per tick. See heading.ts.
 
 /** Analog: how far a single relative `turn` intent nudges the heading. */
 const TURN_STEP = 6;
 /** Analog: the most a heading may rotate in one tick — the bounded turn rate. */
 const MAX_TURN = 16;
-/** Distance under which the head is treated as overlapping a cell. <1 so that
+/** Distance under which two points are treated as overlapping. <1 so that
  *  orthogonally-adjacent cardinal cells (distance 1) never collide, while an
  *  exact overlap (distance 0) always does — keeping cardinal mode identical. */
 const HIT_RADIUS = 0.5;
+/** Arc length behind the head that self-collision ignores — the "neck". The
+ *  node(s) immediately trailing the head are always close; only body further
+ *  along the path can be a genuine self-hit. */
+const NECK = 1.2;
 
-// --- Difficulty curve -----------------------------------------------------
-// The snake starts slow and forgiving, then quickens with every bite: each food
-// both grows the body (see the move step) and shortens the interval between
-// ticks. Speed is a game *rule*, so it lives here as pure data — the composition
-// root reads `tickIntervalMs(state)` to pace its loop; the kernel never touches a
-// clock. All values are milliseconds per simulation tick.
+// --- Difficulty curve (movement speed) ------------------------------------
+// The snake starts slow and forgiving, then quickens with every bite. Speed is a
+// game *rule*, so it lives here as pure data. It used to be encoded as the tick
+// interval; now the tick is fixed and speed is a velocity — the time to cross
+// one cell, from which cells-per-ms falls out. Same feel, decoupled from the
+// timestep.
 
-/** Interval at score 0 — deliberately languid so the first moves are easy. */
-const START_TICK_MS = 200;
-/** The fastest the game gets; the curve clamps here so it stays playable. */
-const MIN_TICK_MS = 75;
-/** How much each food eaten shaves off the tick interval. */
+/** Time to cross one cell at score 0 — deliberately languid to ease players in. */
+const START_INTERVAL_MS = 200;
+/** The shortest cell-crossing time; the curve clamps here so it stays playable. */
+const MIN_INTERVAL_MS = 75;
+/** How much each food eaten shaves off the cell-crossing time. */
 const SPEEDUP_PER_FOOD_MS = 9;
 
 /**
- * The current simulation cadence in ms, as a pure function of how much has been
- * eaten. Starts at START_TICK_MS and tightens by SPEEDUP_PER_FOOD_MS per food,
- * floored at MIN_TICK_MS. This is the difficulty curve; the run loop paces itself
- * by it instead of a constant.
+ * Milliseconds to cross one cell at the given score: starts at START_INTERVAL_MS
+ * and tightens by SPEEDUP_PER_FOOD_MS per food, floored at MIN_INTERVAL_MS. This
+ * is the difficulty curve; movement reads it as a speed (see `speedCellsPerMs`).
  */
-export function tickIntervalMs(state: GameState): number {
-  return Math.max(MIN_TICK_MS, START_TICK_MS - state.score * SPEEDUP_PER_FOOD_MS);
+export function cellIntervalMs(score: number): number {
+  return Math.max(MIN_INTERVAL_MS, START_INTERVAL_MS - score * SPEEDUP_PER_FOOD_MS);
 }
 
-// --- Power-up cadence (in ticks) ------------------------------------------
+/** Current movement speed in cells per millisecond — the inverse of the curve. */
+function speedCellsPerMs(score: number): number {
+  return 1 / cellIntervalMs(score);
+}
+
+// --- Power-up cadence (in milliseconds) -----------------------------------
 // Power-ups are not permanent fixtures: one appears after a random gap, lingers
 // for a short window, then vanishes if not grabbed — the disappearance is what
-// makes it urgent. Timing is measured in integer ticks (the deterministic
-// timeline) and drawn from the seeded RNG, so it replays exactly.
+// makes it urgent. Timing is measured against `clockMs` (accumulated sim time)
+// and drawn from the seeded RNG, so it replays exactly regardless of timestep.
 
-/** How many ticks a power-up stays on the board before despawning. */
-const POWERUP_TTL_TICKS = 40;
+/** How long a power-up stays on the board before despawning. */
+const POWERUP_TTL_MS = 6000;
 /** Shortest gap between one power-up leaving and the next arriving. */
-const POWERUP_MIN_GAP_TICKS = 60;
+const POWERUP_MIN_GAP_MS = 9000;
 /** Longest such gap. The actual gap is drawn uniformly in [MIN, MAX]. */
-const POWERUP_MAX_GAP_TICKS = 140;
+const POWERUP_MAX_GAP_MS = 21000;
 
-/** Draws a random spawn gap (in ticks) from the seeded RNG. */
+/** Draws a random spawn gap (in ms) from the seeded RNG. */
 function nextGap(rngState: number): { readonly gap: number; readonly rngState: number } {
   const { value, state } = nextRng(rngState);
-  const span = POWERUP_MAX_GAP_TICKS - POWERUP_MIN_GAP_TICKS + 1;
-  return { gap: POWERUP_MIN_GAP_TICKS + Math.floor(value * span), rngState: state };
+  const span = POWERUP_MAX_GAP_MS - POWERUP_MIN_GAP_MS;
+  return { gap: POWERUP_MIN_GAP_MS + Math.floor(value * (span + 1)), rngState: state };
 }
 
 function dist(a: Vec2, b: Vec2): number {
@@ -100,6 +119,10 @@ export function initialState(options: NewGameOptions = {}): GameState {
     height,
     snake,
     heading: EAST,
+    pendingHeading: null,
+    cellProgress: 0,
+    lengthCells: snake.length,
+    clockMs: 0,
     mode: "cardinal",
     powerup: null,
     powerupExpiresAt: null,
@@ -116,7 +139,7 @@ export function initialState(options: NewGameOptions = {}): GameState {
 /** All board cells not occupied by the snake, food, or power-up. */
 function freeCells(state: GameState): number[] {
   const occupied = new Set<number>();
-  // Round to the containing cell — analog segments can be sub-cell floats.
+  // Round to the containing cell — analog nodes can be sub-cell floats.
   for (const c of state.snake) occupied.add(Math.round(c.y) * state.width + Math.round(c.x));
   occupied.add(state.food.y * state.width + state.food.x);
   if (state.powerup !== null) occupied.add(state.powerup.y * state.width + state.powerup.x);
@@ -150,65 +173,69 @@ function placePowerup(state: GameState): GameState {
 }
 
 /**
- * Advances the power-up lifecycle for the tick just computed (so `state.tick`
- * already reflects the move). The single place that owns the appear → linger →
- * vanish cycle:
+ * Advances the power-up lifecycle against the accumulated sim clock (`clockMs`,
+ * already updated for this tick). The single place that owns the appear →
+ * linger → vanish cycle:
  *
  * - `collected` — the head grabbed it this tick: clear the token and roll the
  *   next random gap.
  * - active and past its expiry — it timed out unclaimed: clear it and reschedule.
- * - none present and the scheduled spawn tick has arrived — drop a fresh token
+ * - none present and the scheduled spawn time has arrived — drop a fresh token
  *   and start its short despawn countdown.
  */
 function advancePowerup(state: GameState, collected: boolean): GameState {
   if (collected) {
     const { gap, rngState } = nextGap(state.rngState);
-    return { ...state, powerup: null, powerupExpiresAt: null, powerupNextAt: state.tick + gap, rngState };
+    return { ...state, powerup: null, powerupExpiresAt: null, powerupNextAt: state.clockMs + gap, rngState };
   }
   if (state.powerup !== null) {
-    if (state.powerupExpiresAt !== null && state.tick >= state.powerupExpiresAt) {
+    if (state.powerupExpiresAt !== null && state.clockMs >= state.powerupExpiresAt) {
       const { gap, rngState } = nextGap(state.rngState);
-      return { ...state, powerup: null, powerupExpiresAt: null, powerupNextAt: state.tick + gap, rngState };
+      return { ...state, powerup: null, powerupExpiresAt: null, powerupNextAt: state.clockMs + gap, rngState };
     }
     return state;
   }
-  if (state.tick >= state.powerupNextAt) {
+  if (state.clockMs >= state.powerupNextAt) {
     const spawned = placePowerup(state);
     if (spawned.powerup === null) return state; // board full — try again next tick
-    return { ...spawned, powerupExpiresAt: state.tick + POWERUP_TTL_TICKS };
+    return { ...spawned, powerupExpiresAt: state.clockMs + POWERUP_TTL_MS };
   }
   return state;
 }
 
 /**
- * Cardinal steering: the original rules, now over heading indices. At most one
- * legal heading change per tick, and 180° reversals are rejected — together they
- * kill the "reverse into yourself from one input" bug. `steer` is absolute;
- * `turn` is a 90° relative step.
+ * Cardinal steering, buffered. Picks the first legal turn in this tick's intents
+ * — absolute `steer`, an analog-stick `steerAngle` snapped to a cardinal, or a
+ * 90° relative `turn` — rejecting 180° reversals of the committed heading. The
+ * chosen turn latches into `pendingHeading` and is consumed at the next cell
+ * commit, so mashing keys between commits still yields exactly one legal turn
+ * per cell (the classic no-reverse-into-yourself rule, now timestep-independent).
  */
-function steerCardinal(heading: number, intents: readonly Intent[]): number {
+function bufferCardinalTurn(state: GameState, intents: readonly Intent[]): number | null {
+  // A turn is already latched for this cell — first legal wins, ignore the rest.
+  if (state.pendingHeading !== null) return state.pendingHeading;
   for (const intent of intents) {
     let candidate: number | null = null;
     if (intent.kind === "steer") {
       candidate = DIRECTION_INDEX[intent.direction];
     } else if (intent.kind === "steerAngle") {
-      candidate = nearestCardinal(intent.index); // an analog stick, snapped to a cardinal
+      candidate = nearestCardinal(intent.index);
     } else if (intent.kind === "turn") {
-      candidate = rotateBy(heading, intent.turn === "left" ? -QUARTER : QUARTER);
+      candidate = rotateBy(state.heading, intent.turn === "left" ? -QUARTER : QUARTER);
     }
-    if (candidate !== null && !isReversal(candidate, heading)) {
-      return candidate; // first legal change wins
+    if (candidate !== null && candidate !== state.heading && !isReversal(candidate, state.heading)) {
+      return candidate; // first legal change latches
     }
   }
-  return heading;
+  return null;
 }
 
 /**
  * Analog steering: every heading change is capped at MAX_TURN per tick — the
- * continuous generalization of the no-180 rule (you simply cannot spin around in
- * one tick). `turn` intents accumulate (so *holding* a key sweeps the heading
- * while a *tap* nudges it); an absolute `steer` rotates toward that cardinal,
- * also bounded. Both paths preserve the per-tick turn-rate cap.
+ * continuous generalization of the no-180 rule (you cannot spin around in one
+ * tick). `turn` intents accumulate (so *holding* a key sweeps the heading while
+ * a *tap* nudges it); an absolute `steer`/`steerAngle` rotates toward that
+ * target, also bounded. Runs every fine tick, so steering is responsive.
  */
 function steerAnalog(heading: number, intents: readonly Intent[]): number {
   let target: number | null = null;
@@ -228,18 +255,186 @@ function steerAnalog(heading: number, intents: readonly Intent[]): number {
   return next;
 }
 
-function resolveHeading(state: GameState, intents: readonly Intent[]): number {
-  return state.mode === "analog"
-    ? steerAnalog(state.heading, intents)
-    : steerCardinal(state.heading, intents);
+/**
+ * The uniform collision system. Given the head point and the body nodes behind
+ * it (head-first, `nodes[0]` is the head itself), reports whether the head
+ * overlaps any body node past the neck. Distance-based over the continuous
+ * polyline, so it is identical for cardinal and analog — and is exactly the test
+ * a future moving hazard (a falling bullet) would run against the same body.
+ */
+function selfHit(head: Vec2, nodes: readonly Vec2[]): boolean {
+  let arc = 0;
+  for (let k = 1; k < nodes.length; k++) {
+    arc += dist(nodes[k - 1]!, nodes[k]!);
+    if (arc < NECK) continue; // still in the neck — never a real self-hit
+    if (dist(head, nodes[k]!) < HIT_RADIUS) return true;
+  }
+  return false;
+}
+
+/** True when a point has left the board — walls are lethal (classic snake). */
+function outOfBounds(p: Vec2, width: number, height: number): boolean {
+  return p.x < 0 || p.x >= width || p.y < 0 || p.y >= height;
+}
+
+/** What a movement strategy reports back to the shared epilogue. */
+type Move = {
+  readonly state: GameState;
+  readonly ate: boolean;
+  readonly collected: boolean;
+};
+
+/**
+ * Cardinal movement: quantized. Distance accrues into `cellProgress` at the
+ * current speed; each time it crosses a whole cell the head commits exactly one
+ * integer step in the (buffered) heading — so the snap is exact no matter the
+ * timestep. Between commits nothing moves; the renderer holds the crisp grid.
+ */
+function moveCardinal(state: GameState, intents: readonly Intent[], dt: number): Move {
+  const pending = bufferCardinalTurn(state, intents);
+
+  let snake = state.snake;
+  let heading = state.heading;
+  let pendingHeading = pending;
+  let progress = state.cellProgress + speedCellsPerMs(state.score) * dt;
+  let lengthCells = state.lengthCells;
+  let score = state.score;
+  let mode = state.mode;
+  let powerup = state.powerup;
+  let ate = false;
+  let collected = false;
+  let dead = false;
+
+  // Usually at most one commit per tick; a lagged frame may commit a few.
+  while (progress >= 1 && !dead) {
+    progress -= 1;
+    if (pendingHeading !== null) {
+      heading = pendingHeading;
+      pendingHeading = null;
+    }
+    const head = snake[0]!;
+    const step = unitOf(heading);
+    const nextHead: Vec2 = { x: head.x + step.x, y: head.y + step.y };
+
+    if (outOfBounds(nextHead, state.width, state.height)) {
+      dead = true;
+      break;
+    }
+
+    const bite = dist(nextHead, state.food) < HIT_RADIUS;
+    // Vacate the tail before the self-check unless we grow — moving into the
+    // current tail cell is legal.
+    const grown = [nextHead, ...snake];
+    const trimmed = bite ? grown : grown.slice(0, lengthCells);
+    if (selfHit(nextHead, trimmed)) {
+      dead = true; // freeze at the last good position (do not commit the move)
+      break;
+    }
+    if (powerup !== null && dist(nextHead, powerup) < HIT_RADIUS) {
+      collected = true;
+      mode = "analog";
+      powerup = null;
+    }
+    if (bite) {
+      lengthCells += 1;
+      score += 1;
+      ate = true;
+    }
+    snake = trimmed;
+  }
+
+  const next: GameState = {
+    ...state,
+    snake,
+    heading,
+    pendingHeading,
+    cellProgress: dead ? state.cellProgress : progress,
+    lengthCells,
+    score,
+    mode,
+    powerup,
+    phase: dead ? "dead" : "playing",
+  };
+  return { state: next, ate, collected };
+}
+
+/**
+ * Analog movement: continuous. The head integrates velocity·dt every tick along
+ * a freely-rotating heading. A trailing body node is laid down each time the
+ * head has travelled a full cell from the last one, keeping the body a polyline
+ * at ~1-cell arc spacing — so the same distance-based collision and renderer
+ * work unchanged, while the motion itself is smooth.
+ */
+function moveAnalog(state: GameState, intents: readonly Intent[], dt: number): Move {
+  const heading = steerAnalog(state.heading, intents);
+  const step = unitOf(heading);
+  const speed = speedCellsPerMs(state.score) * dt;
+  const head = state.snake[0]!;
+  const nextHead: Vec2 = { x: head.x + step.x * speed, y: head.y + step.y * speed };
+
+  if (outOfBounds(nextHead, state.width, state.height)) {
+    return { state: { ...state, heading, phase: "dead" }, ate: false, collected: false };
+  }
+
+  // Lay a fresh node once the head has opened a full cell of gap to the last one.
+  const anchor = state.snake[1] ?? head;
+  const gap = dist(nextHead, anchor);
+  let nodes: Vec2[];
+  if (gap >= 1) {
+    // Place the new node exactly one cell from the anchor toward the head, so
+    // spacing stays ~1 cell even when a tick overshoots.
+    const inv = 1 / gap;
+    const commit: Vec2 = {
+      x: anchor.x + (nextHead.x - anchor.x) * inv,
+      y: anchor.y + (nextHead.y - anchor.y) * inv,
+    };
+    nodes = [nextHead, commit, ...state.snake.slice(1)];
+  } else {
+    nodes = [nextHead, ...state.snake.slice(1)];
+  }
+
+  const bite = dist(nextHead, state.food) < HIT_RADIUS;
+  const lengthCells = bite ? state.lengthCells + 1 : state.lengthCells;
+  // Keep at most one lead node ahead of `lengthCells` committed nodes.
+  const trimmed = nodes.slice(0, lengthCells + 1);
+
+  if (selfHit(nextHead, trimmed)) {
+    // Freeze at the last good position (do not commit the move).
+    return { state: { ...state, heading, phase: "dead" }, ate: false, collected: false };
+  }
+
+  let mode = state.mode;
+  let powerup = state.powerup;
+  let collected = false;
+  if (powerup !== null && dist(nextHead, powerup) < HIT_RADIUS) {
+    collected = true;
+    mode = "analog";
+    powerup = null;
+  }
+
+  const next: GameState = {
+    ...state,
+    snake: trimmed,
+    heading,
+    lengthCells,
+    score: bite ? state.score + 1 : state.score,
+    mode,
+    powerup,
+    phase: "playing",
+  };
+  return { state: next, ate: bite, collected };
 }
 
 /**
  * The one pure step: (state, intents, dt) -> state. Given the same inputs it
  * always returns the same output — no clock, no randomness beyond the seeded
  * state, no I/O, and no runtime trig (headings index a frozen unit table).
+ *
+ * Structured as an ordered pipeline: control intents → the mode's movement
+ * strategy (which runs the shared collision system) → the shared epilogue
+ * (advance the clock, run the power-up lifecycle, replace eaten food).
  */
-export function tick(state: GameState, intents: readonly Intent[], _dtMs: number): GameState {
+export function tick(state: GameState, intents: readonly Intent[], dtMs: number): GameState {
   // Control intents apply regardless of phase.
   if (intents.some((i) => i.kind === "restart")) {
     return initialState({ width: state.width, height: state.height, seed: state.rngState });
@@ -256,51 +451,24 @@ export function tick(state: GameState, intents: readonly Intent[], _dtMs: number
     }
   }
   if (phase === "paused") {
-    return { ...state, phase };
+    return { ...state, phase }; // frozen: the clock does not advance while paused
   }
 
-  const heading = resolveHeading(state, intents);
-  const step = unitOf(heading);
-  const head = state.snake[0]!;
-  const nextHead: Vec2 = { x: head.x + step.x, y: head.y + step.y };
+  const move = state.mode === "analog"
+    ? moveAnalog(state, intents, dtMs)
+    : moveCardinal(state, intents, dtMs);
 
-  // Walls are lethal (classic snake — no wrap). Cells span [0, width) x
-  // [0, height); a float head is out the moment it leaves that box.
-  if (
-    nextHead.x < 0 ||
-    nextHead.x >= state.width ||
-    nextHead.y < 0 ||
-    nextHead.y >= state.height
-  ) {
-    return { ...state, heading, phase: "dead" };
+  if (move.state.phase === "dead") {
+    return move.state;
   }
 
-  const ate = dist(nextHead, state.food) < HIT_RADIUS;
-
-  // The tail cell is vacated unless we grow, so drop it before the self-collision
-  // check — moving into the current tail is legal. Collision is now distance-based
-  // (HIT_RADIUS), which reduces to exact-cell overlap in cardinal mode.
-  const remaining = ate ? state.snake : state.snake.slice(0, -1);
-  if (remaining.some((c) => dist(c, nextHead) < HIT_RADIUS)) {
-    return { ...state, heading, phase: "dead" };
-  }
-
-  // Collect the joystick: flips control to analog for the rest of the run.
-  const gotPowerup = state.powerup !== null && dist(nextHead, state.powerup) < HIT_RADIUS;
-
-  const moved: GameState = {
-    ...state,
-    snake: [nextHead, ...remaining],
-    heading,
-    mode: gotPowerup ? "analog" : state.mode,
-    powerup: gotPowerup ? null : state.powerup,
-    phase: "playing",
+  // Shared epilogue on the post-move world: advance the clock, run the power-up
+  // lifecycle against it, and drop new food when something was eaten.
+  const advanced: GameState = {
+    ...move.state,
     tick: state.tick + 1,
-    score: ate ? state.score + 1 : state.score,
+    clockMs: state.clockMs + dtMs,
   };
-
-  // Run the power-up clock on the post-move tick: grab, expiry, or timed spawn.
-  const withPowerup = advancePowerup(moved, gotPowerup);
-
-  return ate ? placeFood(withPowerup) : withPowerup;
+  const withPowerup = advancePowerup(advanced, move.collected);
+  return move.ate ? placeFood(withPowerup) : withPowerup;
 }
