@@ -16,6 +16,29 @@ screen is black.
 > If the report is "nothing renders" / "black screen" / "looks wrong",
 > a screenshot is the primary evidence. Do not diagnose from logs alone.
 
+### Two tiers: scene composition (browser-free) vs. pixels (screenshot)
+
+Not every render check needs a browser. The renderer is split in two:
+
+- **`scene-model.ts` decides *what* the frame contains** — camera choice, every
+  node's interpolated position, the wrap-seam snap, the wall-lethal flag, the
+  token — and returns it as **plain data with no three.js import**. That whole
+  layer is unit-tested in Node with **zero browser** (`scene-model.test.ts`). If
+  the bug is "token in the wrong place," "wrong camera," "border didn't recolour,"
+  "analog smears across the portal seam" — reach for that test first; it's fast,
+  deterministic, and runs in CI.
+- **`three-renderer.ts` is the thin GL sink** — it only *places* what the model
+  hands it. The bugs that survive into here are the genuinely pixel-level ones:
+  culling/winding (the case study below), whether a primitive type renders at all
+  under swiftshader (`THREE.Sprite` did not — tokens are billboarded quads),
+  camera framing, and aesthetics. **Those still need a screenshot** (or a human
+  looking at one). No headless browser-free WebGL path exists for this stack:
+  three's `WebGLRenderer` requires a WebGL2 context, which Node has no maintained
+  provider for.
+
+So: put composition logic in the scene model and test it there; spend the
+screenshot budget only on the pixel tail that truly needs it.
+
 ### Case study (why this file exists)
 
 "Black screen on the deployed site." Reality: the page loaded, WebGL worked,
@@ -49,6 +72,25 @@ node scripts/repro.mjs        # serves dist/ at /badsnake/, screenshots to repro
 ```
 
 Then **read `repro.png`.** Compare against the same shot after a candidate fix.
+
+### Screenshotting a specific power-up state
+
+Power-ups (and the states they unlock) are otherwise reachable only by playing up
+to them. The composition root reads **URL-param demo overrides** so you can jump
+straight to one, and `repro.mjs` honours `REPRO_QUERY` / `REPRO_OUT` to drive
+them headlessly:
+
+```sh
+# a token on the board (chip + emoji): powerup=analog|digital|portal|threeD
+REPRO_QUERY="powerup=portal" REPRO_OUT="$PWD/tok.png" node scripts/repro.mjs
+# an *effect* already active: 3d=1 (tilted 3D), portal=1 (walls off / cyan border),
+# mode=analog (continuous steering), seed=N — combine freely
+REPRO_QUERY="3d=1&mode=analog" REPRO_OUT="$PWD/fx.png" node scripts/repro.mjs
+```
+
+The overrides only pre-seed the *initial state* (see `applyDemoOverrides` in
+`app/main.ts`); they touch nothing in the pure kernel. Note the headless capture
+can catch a transitional first frame — if a token looks missing, re-run.
 
 Notes for this environment:
 - Chromium is pre-installed at `/opt/pw-browsers`; do **not** run

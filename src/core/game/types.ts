@@ -34,13 +34,33 @@ export type Phase = "playing" | "paused" | "dead";
  *
  * - `cardinal` — the original four-direction snake. The heading stays pinned to a
  *   cardinal angle and moves in exact 1-cell axis steps.
- * - `analog` — unlocked by the joystick power-up. The heading can point in any of
- *   the discrete angles and rotates by a bounded amount per tick.
+ * - `analog` — unlocked by the 🕹️ joystick power-up. The heading can point in any
+ *   of the discrete angles and rotates by a bounded amount per tick.
  *
  * Both modes share one representation (a continuous body + an angle-index
- * heading), so the switch flips a field and needs no conversion.
+ * heading), so the switch flips a field and needs no conversion. The 📐 digital
+ * power-up flips it back to `cardinal` — the inverse of the joystick.
  */
 export type MoveMode = "cardinal" | "analog";
+
+/**
+ * The kinds of power-up token that can appear on the board. Each one, when the
+ * head walks over it, applies a distinct persistent effect to the game state.
+ * The kernel carries only the *kind* (a value); the renderer owns how each is
+ * drawn (an emoji) — presentation never leaks into the pure model.
+ *
+ * - `analog`  🕹️ — switch steering to continuous/analog (the original power-up).
+ * - `digital` 📐 — switch steering back to the crisp cardinal grid (the inverse).
+ * - `portal`  🌀 — turn off the lethal walls; the board edge wraps Pac-Man-style.
+ * - `threeD`  🧊 — render the snake with real depth (a rendering-only flourish).
+ */
+export type PowerupKind = "analog" | "digital" | "portal" | "threeD";
+
+/** A power-up token on the board: a kind (what it does) and where it sits. */
+export type Powerup = {
+  readonly kind: PowerupKind;
+  readonly pos: Vec2;
+};
 
 export type GameState = {
   readonly width: number;
@@ -91,12 +111,26 @@ export type GameState = {
   readonly clockMs: number;
   readonly mode: MoveMode;
   /**
-   * The joystick power-up token on the board, or null once collected / not
-   * present. Walking the head over it switches `mode` to `analog`. Power-ups are
-   * transient: they appear on a random cadence and vanish after a short while, so
-   * this is null far more often than not.
+   * When true the lethal walls are off and the board edge wraps: the head that
+   * leaves one side re-enters the opposite side (the Pac-Man "portal" effect),
+   * instead of dying. Toggled on by the 🌀 portal power-up. Default false — the
+   * classic snake where leaving the board is fatal.
    */
-  readonly powerup: Vec2 | null;
+  readonly edgeWrap: boolean;
+  /**
+   * When true the renderer draws the snake with real depth (raised, lit blocks
+   * seen through a tilted camera). Toggled on by the 🧊 3D power-up. This is a
+   * pure rendering flag — the kernel carries it but movement/collision ignore it,
+   * so it cannot affect the deterministic simulation.
+   */
+  readonly threeD: boolean;
+  /**
+   * The power-up token on the board, or null once collected / not present. Each
+   * token carries its `kind` (see `PowerupKind`); walking the head over it applies
+   * that kind's effect. Power-ups are transient: they appear on a random cadence
+   * and vanish after a short while, so this is null far more often than not.
+   */
+  readonly powerup: Powerup | null;
   /**
    * Simulation time (ms, see `clockMs`) at which the current power-up despawns
    * (null when none is on the board). The countdown that creates the grab-it-now

@@ -124,7 +124,7 @@ describe("snake kernel", () => {
     const head = base.snake[0]!;
     // Stage the joystick directly ahead of the head (heading east).
     const ahead: Vec2 = { x: head.x + 1, y: head.y };
-    const staged: GameState = { ...base, powerup: ahead };
+    const staged: GameState = { ...base, powerup: { kind: "analog", pos: ahead } };
     const after = tick(staged, NONE, oneCell(staged));
     expect(after.mode).toBe("analog");
     expect(after.powerup).toBeNull();
@@ -241,12 +241,95 @@ describe("snake kernel", () => {
     const head = base.snake[0]!;
     const staged: GameState = {
       ...base,
-      powerup: { x: head.x + 1, y: head.y },
+      powerup: { kind: "analog", pos: { x: head.x + 1, y: head.y } },
       powerupExpiresAt: base.clockMs + 5000,
     };
     const after = tick(staged, NONE, oneCell(staged));
     expect(after.powerup).toBeNull();
     expect(after.powerupExpiresAt).toBeNull();
     expect(after.powerupNextAt).toBeGreaterThan(after.clockMs); // next one is scheduled ahead
+  });
+
+  // --- Diversified power-ups: digital, portal, 3D --------------------------
+
+  it("spawns a power-up carrying a valid kind", () => {
+    const base = initialState({ width: 12, height: 12, seed: 5 });
+    const due: GameState = { ...base, powerupNextAt: base.clockMs };
+    const spawned = tick(due, NONE, SIM_DT_MS);
+    expect(spawned.powerup).not.toBeNull();
+    expect(["analog", "digital", "portal", "threeD"]).toContain(spawned.powerup!.kind);
+  });
+
+  it("the digital power-up snaps an analog snake back onto the cardinal grid", () => {
+    // Start analog and off the integer grid, then stage a digital token ahead.
+    let s: GameState = initialState({ width: 20, height: 20, seed: 2 });
+    s = { ...s, mode: "analog", powerup: null, heading: EAST };
+    s = tick(s, [{ kind: "turn", turn: "right" }], SIM_DT_MS); // now off-axis & off-grid
+    expect(Number.isInteger(s.snake[0]!.x) && Number.isInteger(s.snake[0]!.y)).toBe(false);
+    const head = s.snake[0]!;
+    const ahead: Vec2 = { x: Math.round(head.x) + 1, y: Math.round(head.y) };
+    const staged: GameState = { ...s, powerup: { kind: "digital", pos: ahead } };
+    const after = tick(staged, NONE, oneCell(staged));
+    expect(after.mode).toBe("cardinal");
+    expect(after.powerup).toBeNull();
+    // Every node lands on an exact integer cell and the heading is cardinal again.
+    for (const n of after.snake) {
+      expect(Number.isInteger(n.x) && Number.isInteger(n.y)).toBe(true);
+    }
+    expect([EAST, SOUTH, WEST, NORTH]).toContain(after.heading);
+  });
+
+  it("the portal power-up turns walls off so the head wraps instead of dying", () => {
+    // Cardinal snake one cell from the right edge, heading east, portal already on.
+    const base = initialState({ width: 8, height: 8, seed: 1 });
+    const staged: GameState = {
+      ...base,
+      edgeWrap: true,
+      snake: [{ x: 7, y: 4 }, { x: 6, y: 4 }, { x: 5, y: 4 }],
+      heading: EAST,
+      food: { x: 0, y: 0 },
+    };
+    const after = tick(staged, NONE, oneCell(staged));
+    expect(after.phase).toBe("playing"); // did not die at the wall
+    expect(after.snake[0]).toEqual({ x: 0, y: 4 }); // re-entered the opposite edge
+  });
+
+  it("collecting the portal power-up sets edgeWrap without ending the game", () => {
+    const base = initialState({ width: 10, height: 10, seed: 1 });
+    const head = base.snake[0]!;
+    const staged: GameState = {
+      ...base,
+      powerup: { kind: "portal", pos: { x: head.x + 1, y: head.y } },
+    };
+    const after = tick(staged, NONE, oneCell(staged));
+    expect(after.edgeWrap).toBe(true);
+    expect(after.phase).toBe("playing");
+  });
+
+  it("collecting the 3D power-up sets the render flag but not the simulation", () => {
+    const base = initialState({ width: 10, height: 10, seed: 1 });
+    const head = base.snake[0]!;
+    const staged: GameState = {
+      ...base,
+      powerup: { kind: "threeD", pos: { x: head.x + 1, y: head.y } },
+    };
+    const after = tick(staged, NONE, oneCell(staged));
+    expect(after.threeD).toBe(true);
+    // It is render-only: movement mode and the grid are untouched.
+    expect(after.mode).toBe("cardinal");
+    expect(after.edgeWrap).toBe(false);
+  });
+
+  it("the digital power-up is a no-op when the snake is already cardinal", () => {
+    const base = initialState({ width: 10, height: 10, seed: 1 });
+    const head = base.snake[0]!;
+    const staged: GameState = {
+      ...base,
+      powerup: { kind: "digital", pos: { x: head.x + 1, y: head.y } },
+    };
+    const after = tick(staged, NONE, oneCell(staged));
+    expect(after.mode).toBe("cardinal");
+    // The body just advances one cell — no reshaping.
+    expect(after.snake.length).toBe(base.snake.length);
   });
 });

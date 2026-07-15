@@ -71,15 +71,26 @@ Difficulty curve: the snake starts slow and forgiving, and **every food eaten
 makes it longer and faster** — the tick interval tightens with each bite down to
 a floor, so the board gets more frantic the better you do.
 
-Power-ups: the amber **joystick** token appears on a random cadence and
-**vanishes after a few seconds** if you don't reach it — grab it in time to trade
-the four cardinal directions for **analog steering**, so the heading turns
-continuously (bounded per tick) instead of snapping 90° and you carve curves
-rather than right angles. The on-screen joystick points the snake directly once
-analog is unlocked.
+Power-ups: a token appears on a random cadence and **vanishes after a few
+seconds** if you don't reach it — grab it in time for its effect. Each token is a
+coloured chip carrying an **emoji** that names what it does, and the kind that
+appears is random. There are four:
 
-The board edge is lethal — leaving it kills the snake — so it's framed in a
-**danger red** border.
+- 🕹️ **joystick (analog)** — trade the four cardinal directions for **analog
+  steering**: the heading turns continuously (bounded per tick) instead of
+  snapping 90°, so you carve curves rather than right angles. The on-screen
+  joystick then points the snake directly.
+- 📐 **grid (digital)** — the inverse of the joystick: snap back to crisp
+  **cardinal** movement, re-quantizing the curvy analog body onto the grid.
+- 🌀 **portal** — turn the lethal walls **off**: the board edge wraps
+  Pac-Man-style, so leaving one side re-enters the opposite side. The border
+  recolours from danger red to a calm cyan to show the edge is now safe.
+- 🧊 **3D** — render the snake with real **depth**: raised, lit blocks seen
+  through a tilted camera. Purely cosmetic for now — a first stretch of the 3D
+  rendering the orthographic scene was always keeping in reserve.
+
+The board edge is lethal by default — leaving it kills the snake — so it's framed
+in a **danger red** border (until 🌀 portal turns the walls off).
 
 ## Status
 
