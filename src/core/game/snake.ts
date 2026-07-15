@@ -1,4 +1,4 @@
-import type { GameState, Intent, Vec2 } from "./types";
+import type { GameState, Intent, Powerup, PowerupKind, Vec2 } from "./types";
 import { nextRng, seedRng } from "./rng";
 import {
   DIRECTION_INDEX,
@@ -88,10 +88,42 @@ function nextGap(rngState: number): { readonly gap: number; readonly rngState: n
   return { gap: POWERUP_MIN_GAP_MS + Math.floor(value * (span + 1)), rngState: state };
 }
 
+// The pool a spawning power-up draws its kind from. All are equally likely; the
+// draw is seeded, so which token appears is random yet fully deterministic under
+// replay. Ordering is fixed (it indexes the RNG value) — do not reorder without
+// accepting that recorded seeds map to different tokens.
+const POWERUP_KINDS: readonly PowerupKind[] = ["analog", "digital", "portal", "threeD"];
+
+/** Draws a random power-up kind from the seeded RNG. */
+function nextKind(rngState: number): { readonly kind: PowerupKind; readonly rngState: number } {
+  const { value, state } = nextRng(rngState);
+  const kind = POWERUP_KINDS[Math.floor(value * POWERUP_KINDS.length)]!;
+  return { kind, rngState: state };
+}
+
 function dist(a: Vec2, b: Vec2): number {
   const dx = a.x - b.x;
   const dy = a.y - b.y;
   return Math.sqrt(dx * dx + dy * dy); // sqrt is correctly-rounded → deterministic
+}
+
+/** Clamp `v` into the closed integer range [0, size - 1]. */
+function clamp(v: number, size: number): number {
+  return Math.max(0, Math.min(size - 1, v));
+}
+
+/**
+ * Fold a coordinate back onto the board when the edge wraps (portal power-up).
+ * Works for both integer cardinal cells and continuous analog floats — the
+ * float remainder keeps the sub-cell offset, so a head at 20.1 on a 20-wide
+ * board re-enters at 0.1. Deterministic (basic float arithmetic only).
+ */
+function wrapAxis(v: number, size: number): number {
+  return ((v % size) + size) % size;
+}
+
+function wrapVec(p: Vec2, width: number, height: number): Vec2 {
+  return { x: wrapAxis(p.x, width), y: wrapAxis(p.y, height) };
 }
 
 export type NewGameOptions = {
@@ -124,6 +156,8 @@ export function initialState(options: NewGameOptions = {}): GameState {
     lengthCells: snake.length,
     clockMs: 0,
     mode: "cardinal",
+    edgeWrap: false,
+    threeD: false,
     powerup: null,
     powerupExpiresAt: null,
     powerupNextAt: gap,
@@ -142,7 +176,9 @@ function freeCells(state: GameState): number[] {
   // Round to the containing cell — analog nodes can be sub-cell floats.
   for (const c of state.snake) occupied.add(Math.round(c.y) * state.width + Math.round(c.x));
   occupied.add(state.food.y * state.width + state.food.x);
-  if (state.powerup !== null) occupied.add(state.powerup.y * state.width + state.powerup.x);
+  if (state.powerup !== null) {
+    occupied.add(state.powerup.pos.y * state.width + state.powerup.pos.x);
+  }
   const free: number[] = [];
   for (let i = 0; i < state.width * state.height; i++) {
     if (!occupied.has(i)) free.push(i);
@@ -162,14 +198,65 @@ function placeFood(state: GameState): GameState {
   return { ...state, food, rngState };
 }
 
-/** Deterministically drops the joystick power-up onto a random empty cell. */
+/**
+ * Deterministically drops a power-up onto a random empty cell with a random
+ * kind. Two seeded draws — the cell, then the kind — so both the where and the
+ * what stay a deterministic function of the seed.
+ */
 function placePowerup(state: GameState): GameState {
   const free = freeCells(state);
   if (free.length === 0) return state;
-  const { value, state: rngState } = nextRng(state.rngState);
+  const { value, state: afterCell } = nextRng(state.rngState);
   const cell = free[Math.floor(value * free.length)]!;
-  const powerup: Vec2 = { x: cell % state.width, y: Math.floor(cell / state.width) };
+  const pos: Vec2 = { x: cell % state.width, y: Math.floor(cell / state.width) };
+  const { kind, rngState } = nextKind(afterCell);
+  const powerup: Powerup = { kind, pos };
   return { ...state, powerup, rngState };
+}
+
+/**
+ * Applies a collected power-up's persistent effect to the post-move state. This
+ * is the one place the kind → effect mapping lives:
+ *
+ * - `analog`  — switch steering to continuous mode.
+ * - `digital` — switch back to the cardinal grid, snapping the (possibly
+ *   off-grid, off-axis) analog body onto integer cells and a cardinal heading so
+ *   quantized movement resumes cleanly. A no-op if already cardinal.
+ * - `portal`  — turn the lethal walls off; the edge now wraps.
+ * - `threeD`  — flip the render-only depth flag.
+ */
+function applyPowerupEffect(state: GameState, kind: PowerupKind): GameState {
+  switch (kind) {
+    case "analog":
+      return { ...state, mode: "analog" };
+    case "digital":
+      return state.mode === "cardinal" ? state : snapToCardinal(state);
+    case "portal":
+      return { ...state, edgeWrap: true };
+    case "threeD":
+      return { ...state, threeD: true };
+  }
+}
+
+/**
+ * Re-quantizes an analog snake back onto the cardinal grid: every body node
+ * rounds to its containing integer cell (clamped inside the board) and the
+ * heading snaps to the nearest cardinal, with the steering accumulators reset.
+ * The curvy analog body becomes a crisp stair-stepped one — the visual tell that
+ * the snake went "digital" — and cardinal movement can commit exact cells from it.
+ */
+function snapToCardinal(state: GameState): GameState {
+  const snake: Vec2[] = state.snake
+    .slice(0, state.lengthCells)
+    .map((n) => ({ x: clamp(Math.round(n.x), state.width), y: clamp(Math.round(n.y), state.height) }));
+  return {
+    ...state,
+    mode: "cardinal",
+    heading: nearestCardinal(state.heading),
+    pendingHeading: null,
+    cellProgress: 0,
+    snake,
+  };
 }
 
 /**
@@ -281,7 +368,8 @@ function outOfBounds(p: Vec2, width: number, height: number): boolean {
 type Move = {
   readonly state: GameState;
   readonly ate: boolean;
-  readonly collected: boolean;
+  /** The kind of power-up grabbed this step, or null if none. */
+  readonly collected: PowerupKind | null;
 };
 
 /**
@@ -299,10 +387,9 @@ function moveCardinal(state: GameState, intents: readonly Intent[], dt: number):
   let progress = state.cellProgress + speedCellsPerMs(state.score) * dt;
   let lengthCells = state.lengthCells;
   let score = state.score;
-  let mode = state.mode;
   let powerup = state.powerup;
   let ate = false;
-  let collected = false;
+  let collected: PowerupKind | null = null;
   let dead = false;
 
   // Usually at most one commit per tick; a lagged frame may commit a few.
@@ -314,11 +401,15 @@ function moveCardinal(state: GameState, intents: readonly Intent[], dt: number):
     }
     const head = snake[0]!;
     const step = unitOf(heading);
-    const nextHead: Vec2 = { x: head.x + step.x, y: head.y + step.y };
+    let nextHead: Vec2 = { x: head.x + step.x, y: head.y + step.y };
 
     if (outOfBounds(nextHead, state.width, state.height)) {
-      dead = true;
-      break;
+      if (state.edgeWrap) {
+        nextHead = wrapVec(nextHead, state.width, state.height); // portal: re-enter opposite edge
+      } else {
+        dead = true;
+        break;
+      }
     }
 
     const bite = dist(nextHead, state.food) < HIT_RADIUS;
@@ -330,9 +421,8 @@ function moveCardinal(state: GameState, intents: readonly Intent[], dt: number):
       dead = true; // freeze at the last good position (do not commit the move)
       break;
     }
-    if (powerup !== null && dist(nextHead, powerup) < HIT_RADIUS) {
-      collected = true;
-      mode = "analog";
+    if (powerup !== null && dist(nextHead, powerup.pos) < HIT_RADIUS) {
+      collected = powerup.kind; // effect is applied in the shared epilogue
       powerup = null;
     }
     if (bite) {
@@ -351,7 +441,6 @@ function moveCardinal(state: GameState, intents: readonly Intent[], dt: number):
     cellProgress: dead ? state.cellProgress : progress,
     lengthCells,
     score,
-    mode,
     powerup,
     phase: dead ? "dead" : "playing",
   };
@@ -370,27 +459,37 @@ function moveAnalog(state: GameState, intents: readonly Intent[], dt: number): M
   const step = unitOf(heading);
   const speed = speedCellsPerMs(state.score) * dt;
   const head = state.snake[0]!;
-  const nextHead: Vec2 = { x: head.x + step.x * speed, y: head.y + step.y * speed };
+  const rawNext: Vec2 = { x: head.x + step.x * speed, y: head.y + step.y * speed };
 
-  if (outOfBounds(nextHead, state.width, state.height)) {
-    return { state: { ...state, heading, phase: "dead" }, ate: false, collected: false };
+  const wrapped = outOfBounds(rawNext, state.width, state.height);
+  if (wrapped && !state.edgeWrap) {
+    return { state: { ...state, heading, phase: "dead" }, ate: false, collected: null };
   }
+  const nextHead = wrapped ? wrapVec(rawNext, state.width, state.height) : rawNext;
 
-  // Lay a fresh node once the head has opened a full cell of gap to the last one.
-  const anchor = state.snake[1] ?? head;
-  const gap = dist(nextHead, anchor);
   let nodes: Vec2[];
-  if (gap >= 1) {
-    // Place the new node exactly one cell from the anchor toward the head, so
-    // spacing stays ~1 cell even when a tick overshoots.
-    const inv = 1 / gap;
-    const commit: Vec2 = {
-      x: anchor.x + (nextHead.x - anchor.x) * inv,
-      y: anchor.y + (nextHead.y - anchor.y) * inv,
-    };
-    nodes = [nextHead, commit, ...state.snake.slice(1)];
+  if (wrapped) {
+    // Portal crossing: the head jumped to the far edge, so the anchor-relative
+    // interpolation below would lay a node straight across the board. Start a
+    // fresh polyline node at the wrapped head instead — the seam is inherent to
+    // wrapping, and the renderer snaps (rather than glides) across it.
+    nodes = [nextHead, ...state.snake];
   } else {
-    nodes = [nextHead, ...state.snake.slice(1)];
+    // Lay a fresh node once the head has opened a full cell of gap to the last one.
+    const anchor = state.snake[1] ?? head;
+    const gap = dist(nextHead, anchor);
+    if (gap >= 1) {
+      // Place the new node exactly one cell from the anchor toward the head, so
+      // spacing stays ~1 cell even when a tick overshoots.
+      const inv = 1 / gap;
+      const commit: Vec2 = {
+        x: anchor.x + (nextHead.x - anchor.x) * inv,
+        y: anchor.y + (nextHead.y - anchor.y) * inv,
+      };
+      nodes = [nextHead, commit, ...state.snake.slice(1)];
+    } else {
+      nodes = [nextHead, ...state.snake.slice(1)];
+    }
   }
 
   const bite = dist(nextHead, state.food) < HIT_RADIUS;
@@ -400,15 +499,13 @@ function moveAnalog(state: GameState, intents: readonly Intent[], dt: number): M
 
   if (selfHit(nextHead, trimmed)) {
     // Freeze at the last good position (do not commit the move).
-    return { state: { ...state, heading, phase: "dead" }, ate: false, collected: false };
+    return { state: { ...state, heading, phase: "dead" }, ate: false, collected: null };
   }
 
-  let mode = state.mode;
   let powerup = state.powerup;
-  let collected = false;
-  if (powerup !== null && dist(nextHead, powerup) < HIT_RADIUS) {
-    collected = true;
-    mode = "analog";
+  let collected: PowerupKind | null = null;
+  if (powerup !== null && dist(nextHead, powerup.pos) < HIT_RADIUS) {
+    collected = powerup.kind; // effect is applied in the shared epilogue
     powerup = null;
   }
 
@@ -418,7 +515,6 @@ function moveAnalog(state: GameState, intents: readonly Intent[], dt: number): M
     heading,
     lengthCells,
     score: bite ? state.score + 1 : state.score,
-    mode,
     powerup,
     phase: "playing",
   };
@@ -462,13 +558,15 @@ export function tick(state: GameState, intents: readonly Intent[], dtMs: number)
     return move.state;
   }
 
-  // Shared epilogue on the post-move world: advance the clock, run the power-up
-  // lifecycle against it, and drop new food when something was eaten.
+  // Shared epilogue on the post-move world: advance the clock, apply any
+  // collected power-up's effect, run the power-up lifecycle against the clock,
+  // and drop new food when something was eaten.
   const advanced: GameState = {
     ...move.state,
     tick: state.tick + 1,
     clockMs: state.clockMs + dtMs,
   };
-  const withPowerup = advancePowerup(advanced, move.collected);
+  const effected = move.collected !== null ? applyPowerupEffect(advanced, move.collected) : advanced;
+  const withPowerup = advancePowerup(effected, move.collected !== null);
   return move.ate ? placeFood(withPowerup) : withPowerup;
 }

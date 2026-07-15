@@ -44,7 +44,12 @@ const server = createServer(async (req, res) => {
   }
 });
 await new Promise((r) => server.listen(0, r));
-const url = `http://localhost:${server.address().port}${SUBPATH}/`;
+// REPRO_QUERY lets a caller drive the app's URL-param demo overrides (e.g.
+// "3d=1&powerup=analog") so a specific power-up state can be screenshotted
+// without playing up to it. REPRO_OUT overrides the screenshot path.
+const query = process.env.REPRO_QUERY ? `?${process.env.REPRO_QUERY}` : "";
+const url = `http://localhost:${server.address().port}${SUBPATH}/${query}`;
+const outPath = process.env.REPRO_OUT ? process.env.REPRO_OUT : OUT;
 
 const browser = await chromium.launch({
   executablePath: await findChromium(),
@@ -79,10 +84,10 @@ const info = await page.evaluate(() => {
   };
 });
 
-await page.screenshot({ path: OUT });
+await page.screenshot({ path: outPath });
 console.log("URL:      ", url);
 console.log("DOM/GL:   ", JSON.stringify(info));
-console.log("screenshot:", OUT, "  <-- LOOK AT THIS");
+console.log("screenshot:", outPath, "  <-- LOOK AT THIS");
 console.log(`logs (${logs.length}):\n` + (logs.join("\n") || "(none)"));
 
 await browser.close();

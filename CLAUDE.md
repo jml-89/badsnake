@@ -50,6 +50,25 @@ node scripts/repro.mjs        # serves dist/ at /badsnake/, screenshots to repro
 
 Then **read `repro.png`.** Compare against the same shot after a candidate fix.
 
+### Screenshotting a specific power-up state
+
+Power-ups (and the states they unlock) are otherwise reachable only by playing up
+to them. The composition root reads **URL-param demo overrides** so you can jump
+straight to one, and `repro.mjs` honours `REPRO_QUERY` / `REPRO_OUT` to drive
+them headlessly:
+
+```sh
+# a token on the board (chip + emoji): powerup=analog|digital|portal|threeD
+REPRO_QUERY="powerup=portal" REPRO_OUT="$PWD/tok.png" node scripts/repro.mjs
+# an *effect* already active: 3d=1 (tilted 3D), portal=1 (walls off / cyan border),
+# mode=analog (continuous steering), seed=N — combine freely
+REPRO_QUERY="3d=1&mode=analog" REPRO_OUT="$PWD/fx.png" node scripts/repro.mjs
+```
+
+The overrides only pre-seed the *initial state* (see `applyDemoOverrides` in
+`app/main.ts`); they touch nothing in the pure kernel. Note the headless capture
+can catch a transitional first frame — if a token looks missing, re-run.
+
 Notes for this environment:
 - Chromium is pre-installed at `/opt/pw-browsers`; do **not** run
   `playwright install`. The script auto-detects that path and falls back to
