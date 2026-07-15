@@ -120,13 +120,25 @@ export function createThreeRenderer(
   const flatCamera = new THREE.OrthographicCamera(0, cols, 0, rows, -10, 10);
   flatCamera.position.z = 5;
 
-  // 3D: a perspective camera pulled above and in front of the board, tilted so
-  // the raised blocks stand up toward the viewer. `up = (0,-1,0)` keeps the
-  // kernel's y-down orientation (row 0 at the top) consistent with the flat view.
+  // 3D: a perspective camera hovering above the board's centre and pulled back
+  // over the south edge, tilted so the raised blocks stand up toward the viewer
+  // with north receding to the top of the frame.
+  //
+  // Screen orientation must match the flat view — north (y=0) at the top, east
+  // (+x) to the right — so the 3D power-up doesn't mirror the board. But the
+  // board's (east, north, out-of-board) axes form a LEFT-handed triple (the
+  // kernel's y points down), and no real camera pose can put north up AND east
+  // right at once: orienting for one mirrors the other (the old `up = (0,-1,0)`
+  // got north up but flipped east/west — the snake appeared on the wrong side).
+  // The flat OrthographicCamera dodges this with an inverted-Y frustum (top=0,
+  // bottom=rows); the perspective camera needs the same reflection, applied to
+  // its projection. Like the flat quads and walls, the reflection flips triangle
+  // winding, so the lit blocks below render with DoubleSide.
   const camera3d = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-  camera3d.up.set(0, -1, 0);
   camera3d.position.set(cols / 2, rows * 1.65, Math.max(cols, rows) * 0.9);
   camera3d.lookAt(cols / 2, rows * 0.42, 0);
+  camera3d.updateProjectionMatrix();
+  camera3d.projectionMatrix.elements[5] *= -1; // invert Y: north to the top, east stays right
 
   // Lights for the 3D materials. Harmless in flat mode: the unlit MeshBasic
   // materials there ignore them entirely.
@@ -179,12 +191,15 @@ export function createThreeRenderer(
   const foodMaterial = new THREE.MeshBasicMaterial({ color: COLORS.food, side: THREE.DoubleSide });
 
   // 3D blocks: real solids, lit so their depth reads. The head stands taller.
+  // DoubleSide for the same reason the flat quads need it: the 3D camera's
+  // inverted-Y projection (see above) flips triangle winding, so FrontSide would
+  // back-face-cull the boxes away. DoubleSide renders them regardless of winding.
   const bodyBox = new THREE.BoxGeometry(0.82, 0.82, BODY_DEPTH);
   const headBox = new THREE.BoxGeometry(0.86, 0.86, HEAD_DEPTH);
   const foodBox = new THREE.BoxGeometry(0.72, 0.72, FOOD_DEPTH);
-  const headMaterial3d = new THREE.MeshStandardMaterial({ color: COLORS.head, roughness: 0.45, metalness: 0.1 });
-  const bodyMaterial3d = new THREE.MeshStandardMaterial({ color: COLORS.body, roughness: 0.5, metalness: 0.1 });
-  const foodMaterial3d = new THREE.MeshStandardMaterial({ color: COLORS.food, roughness: 0.4, metalness: 0.1 });
+  const headMaterial3d = new THREE.MeshStandardMaterial({ color: COLORS.head, roughness: 0.45, metalness: 0.1, side: THREE.DoubleSide });
+  const bodyMaterial3d = new THREE.MeshStandardMaterial({ color: COLORS.body, roughness: 0.5, metalness: 0.1, side: THREE.DoubleSide });
+  const foodMaterial3d = new THREE.MeshStandardMaterial({ color: COLORS.food, roughness: 0.4, metalness: 0.1, side: THREE.DoubleSide });
 
   const cells = new THREE.Group();
   scene.add(cells);
