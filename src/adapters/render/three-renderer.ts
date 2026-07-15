@@ -90,21 +90,22 @@ export function createThreeRenderer(
     cells.add(mesh);
   }
 
-  // --- Render-time interpolation -------------------------------------------
-  // The simulation advances the body one cell per tick, but frames render far
-  // more often. Drawn raw, the snake teleports a whole cell each tick — fine on
-  // a cardinal grid, but jarring in analog mode, where you steer through a
-  // continuous angle yet the body lurches in discrete steps. So we glide: we
-  // keep the previous tick's body and the current one, and each frame draw the
-  // body `alpha` of the way between them (alpha ∈ [0,1] is the fraction of the
-  // way to the next tick, handed in by the run loop). This is the render-time
-  // `alpha` the architecture reserves for exactly this — it lives entirely here
-  // and never touches the kernel or replay determinism.
+  // --- Render-time interpolation (analog only) -----------------------------
+  // The two movement modes want opposite things on screen, and both are correct:
   //
-  // We interpolate only across a normal single-tick advance while playing. On
-  // the first frame, a restart, a pause, death, or a multi-tick catch-up (after
-  // a hidden tab) the body snaps to its true positions rather than gliding
-  // across the gap.
+  //   - cardinal snaps. Its kernel holds the head on an integer cell and commits
+  //     cell to cell, so we draw it raw — the crisp, guaranteed grid the mode is
+  //     built around. Interpolating it would only smear the snap.
+  //   - analog glides. Its head moves a sub-cell fraction each fixed tick, so we
+  //     draw the body `alpha` of the way from the previous tick to the current
+  //     one (alpha ∈ [0,1] is the fraction toward the next tick, from the run
+  //     loop) — turning the discrete steps into continuous motion. This is the
+  //     render-time `alpha` the architecture reserves for exactly this; it lives
+  //     entirely here and never touches the kernel or replay determinism.
+  //
+  // We interpolate only across a normal single-tick advance while playing and
+  // in analog mode. On the first frame, a restart, a pause, death, a mode flip,
+  // or a multi-tick catch-up (after a hidden tab) the body snaps instead.
   let curSnake: readonly Vec2[] | null = null;
   let prevSnake: readonly Vec2[] = [];
   let curTick = -1;
@@ -115,11 +116,12 @@ export function createThreeRenderer(
 
   return {
     render(state: GameState, alpha: number): void {
-      // Advance the interpolation pair. Segment i glides from prevSnake[i] to
-      // curSnake[i]; since curSnake[i] === prevSnake[i-1] for a moving body,
-      // that's a one-cell forward crawl. When the body grew, curSnake is one
-      // longer — the extra (new tail) clamps to the old tail and stays put.
-      if (curSnake === null || state.phase !== "playing") {
+      // Advance the interpolation pair. Node i glides from prevSnake[i] to
+      // curSnake[i]; for a moving body curSnake[i] ≈ prevSnake[i-1], a forward
+      // crawl. A length change (growth / a fresh lead node) clamps the extra
+      // tail node to the old tail, so it stays put.
+      const smooth = state.mode === "analog";
+      if (curSnake === null || state.phase !== "playing" || !smooth) {
         prevSnake = state.snake;
         curSnake = state.snake;
         curTick = state.tick;
@@ -135,7 +137,7 @@ export function createThreeRenderer(
       }
       // else: same tick, still gliding — keep the pair, let alpha advance.
 
-      const t = Math.max(0, Math.min(1, alpha));
+      const t = smooth ? Math.max(0, Math.min(1, alpha)) : 1;
       const cur = curSnake;
       const prev = prevSnake;
 
