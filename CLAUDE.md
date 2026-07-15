@@ -16,6 +16,29 @@ screen is black.
 > If the report is "nothing renders" / "black screen" / "looks wrong",
 > a screenshot is the primary evidence. Do not diagnose from logs alone.
 
+### Two tiers: scene composition (browser-free) vs. pixels (screenshot)
+
+Not every render check needs a browser. The renderer is split in two:
+
+- **`scene-model.ts` decides *what* the frame contains** — camera choice, every
+  node's interpolated position, the wrap-seam snap, the wall-lethal flag, the
+  token — and returns it as **plain data with no three.js import**. That whole
+  layer is unit-tested in Node with **zero browser** (`scene-model.test.ts`). If
+  the bug is "token in the wrong place," "wrong camera," "border didn't recolour,"
+  "analog smears across the portal seam" — reach for that test first; it's fast,
+  deterministic, and runs in CI.
+- **`three-renderer.ts` is the thin GL sink** — it only *places* what the model
+  hands it. The bugs that survive into here are the genuinely pixel-level ones:
+  culling/winding (the case study below), whether a primitive type renders at all
+  under swiftshader (`THREE.Sprite` did not — tokens are billboarded quads),
+  camera framing, and aesthetics. **Those still need a screenshot** (or a human
+  looking at one). No headless browser-free WebGL path exists for this stack:
+  three's `WebGLRenderer` requires a WebGL2 context, which Node has no maintained
+  provider for.
+
+So: put composition logic in the scene model and test it there; spend the
+screenshot budget only on the pixel tail that truly needs it.
+
 ### Case study (why this file exists)
 
 "Black screen on the deployed site." Reality: the page loaded, WebGL worked,

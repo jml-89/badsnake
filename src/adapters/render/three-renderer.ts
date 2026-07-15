@@ -1,6 +1,7 @@
 import * as THREE from "three";
 import type { GameState, PowerupKind, Vec2 } from "../../core/game/types";
 import type { Renderer } from "../../core/ports/renderer";
+import { advanceInterp, composeScene, initialInterp } from "./scene-model";
 
 const COLORS = {
   background: 0x0a0a0a,
@@ -42,13 +43,6 @@ const WALL_THICKNESS = 0.18;
 const BODY_DEPTH = 0.8;
 const HEAD_DEPTH = 1.3; // the head stands taller so it reads at a glance
 const FOOD_DEPTH = 0.6;
-
-/**
- * A render-node jump larger than this (world units, per axis) is treated as a
- * portal wrap seam rather than motion, so interpolation snaps across it instead
- * of sliding the body all the way back across the board.
- */
-const WRAP_SNAP = 2;
 
 /** Traces a rounded-rect path on a 2D context (no roundRect dependency). */
 function roundRectPath(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
@@ -237,81 +231,35 @@ export function createThreeRenderer(
   powerupMesh.visible = false;
   scene.add(powerupMesh);
 
-  // --- Render-time interpolation (analog only) -----------------------------
-  // The two movement modes want opposite things on screen, and both are correct:
-  //
-  //   - cardinal snaps. Its kernel holds the head on an integer cell and commits
-  //     cell to cell, so we draw it raw — the crisp, guaranteed grid the mode is
-  //     built around. Interpolating it would only smear the snap.
-  //   - analog glides. Its head moves a sub-cell fraction each fixed tick, so we
-  //     draw the body `alpha` of the way from the previous tick to the current
-  //     one (alpha ∈ [0,1] is the fraction toward the next tick, from the run
-  //     loop) — turning the discrete steps into continuous motion. This is the
-  //     render-time `alpha` the architecture reserves for exactly this; it lives
-  //     entirely here and never touches the kernel or replay determinism.
-  //
-  // We interpolate only across a normal single-tick advance while playing and
-  // in analog mode. On the first frame, a restart, a pause, death, a mode flip,
-  // or a multi-tick catch-up (after a hidden tab) the body snaps instead.
-  let curSnake: readonly Vec2[] | null = null;
-  let prevSnake: readonly Vec2[] = [];
-  let curTick = -1;
-
-  function lerp(a: number, b: number, t: number): number {
-    return a + (b - a) * t;
-  }
+  // Render-time interpolation state (the prev/cur snake pair). Its *rules* and
+  // the per-node lerp/wrap-snap live in the pure scene-model module; the sink
+  // only carries the pair across frames and draws what it is handed.
+  let interp = initialInterp;
 
   return {
     render(state: GameState, alpha: number): void {
-      const is3D = state.threeD;
+      // Decide the whole frame as plain data (pure, unit-tested), then place it.
+      interp = advanceInterp(interp, state);
+      const model = composeScene(state, interp, alpha);
+      const is3D = model.camera === "3d";
       const camera = is3D ? camera3d : flatCamera;
 
       // The frame recolours to signal whether the edge is lethal or wraps.
-      wallMaterial.color.setHex(state.edgeWrap ? COLORS.wallOff : COLORS.wall);
-
-      // Advance the interpolation pair. Node i glides from prevSnake[i] to
-      // curSnake[i]; for a moving body curSnake[i] ≈ prevSnake[i-1], a forward
-      // crawl. A length change (growth / a fresh lead node) clamps the extra
-      // tail node to the old tail, so it stays put.
-      const smooth = state.mode === "analog";
-      if (curSnake === null || state.phase !== "playing" || !smooth) {
-        prevSnake = state.snake;
-        curSnake = state.snake;
-        curTick = state.tick;
-      } else if (state.tick === curTick + 1) {
-        prevSnake = curSnake;
-        curSnake = state.snake;
-        curTick = state.tick;
-      } else if (state.tick !== curTick) {
-        // Reset or multi-tick jump: snap, don't glide across the gap.
-        prevSnake = state.snake;
-        curSnake = state.snake;
-        curTick = state.tick;
-      }
-      // else: same tick, still gliding — keep the pair, let alpha advance.
-
-      const t = smooth ? Math.max(0, Math.min(1, alpha)) : 1;
-      const cur = curSnake;
-      const prev = prevSnake;
+      wallMaterial.color.setHex(model.wallsLethal ? COLORS.wall : COLORS.wallOff);
 
       cells.clear();
-      put(state.food, "food", is3D);
-      cur.forEach((segment, index) => {
-        const from = prev[Math.min(index, prev.length - 1)] ?? segment;
-        // Across a portal wrap seam the node jumps a whole board width/height;
-        // snapping that axis (rather than lerping) avoids sliding it backwards.
-        const px = Math.abs(from.x - segment.x) > WRAP_SNAP ? segment.x : lerp(from.x, segment.x, t);
-        const py = Math.abs(from.y - segment.y) > WRAP_SNAP ? segment.y : lerp(from.y, segment.y, t);
-        put({ x: px, y: py }, index === 0 ? "head" : "body", is3D);
+      put(model.food, "food", is3D);
+      model.snake.forEach((segment, index) => {
+        put(segment, index === 0 ? "head" : "body", is3D);
       });
 
       // Power-up token: swap glyph to match the kind, place it over its cell, and
       // billboard it to face the active camera.
-      if (state.powerup !== null) {
-        powerupMaterial.map = emojiTextureFor(state.powerup.kind);
+      if (model.token !== null) {
+        powerupMaterial.map = emojiTextureFor(model.token.kind);
         powerupMaterial.needsUpdate = true;
         const z = is3D ? 0.9 : 0.1; // float above the blocks in 3D, just off the floor in flat
-        powerupMesh.position.set(state.powerup.pos.x + 0.5, state.powerup.pos.y + 0.5, z);
+        powerupMesh.position.set(model.token.pos.x + 0.5, model.token.pos.y + 0.5, z);
         powerupMesh.quaternion.copy(camera.quaternion); // billboard toward the viewer
         powerupMesh.visible = true;
       } else {
