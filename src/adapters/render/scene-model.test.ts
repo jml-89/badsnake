@@ -68,6 +68,21 @@ describe("scene model", () => {
     expect(m.snake[0]!.x).toBeCloseTo(5.5); // halfway between prev head (5) and cur head (6)
   });
 
+  it("flows the body along the trail on a non-commit tick — no freeze/step", () => {
+    // The head advances but the committed body nodes carry over unchanged (a tick
+    // that lays no new node). Index-based interpolation would freeze the body here
+    // and then jump it a whole cell on the next commit — the visible stepping. The
+    // arc-length follow instead slides each body node forward behind the head, so
+    // node[1] (one cell of arc back) tracks the head continuously.
+    const a = st({ mode: "analog", snake: [{ x: 5, y: 5 }, { x: 4, y: 5 }, { x: 3, y: 5 }], tick: 10 });
+    const b = st({ mode: "analog", snake: [{ x: 5.5, y: 5 }, { x: 4, y: 5 }, { x: 3, y: 5 }], tick: 11 });
+    const rest = composeScene(b, pairAcross(a, b), 0); // start of tick: body at its committed spot
+    expect(rest.snake[1]!.x).toBeCloseTo(4.0);
+    const mid = composeScene(b, pairAcross(a, b), 0.5); // mid-tick: it has moved, not frozen
+    expect(mid.snake[1]!.x).toBeCloseTo(4.25);
+    expect(mid.snake[1]!.x).toBeGreaterThan(rest.snake[1]!.x); // glided toward the head
+  });
+
   // --- The wrap seam: glide the short way across it, don't smear ------------
 
   it("glides a node across a portal seam the short way, then wraps — not the long way", () => {
@@ -83,17 +98,19 @@ describe("scene model", () => {
     expect(done.snake[0]!.x).toBeCloseTo(0.2); // arrives at the destination on the far edge
   });
 
-  it("carries a trailing body node across the seam by the same rule (the body follows the head)", () => {
+  it("lays the body across the seam behind the head, never smearing through mid-board", () => {
     // The reported bug: the head crosses the portal but the body smears the long
-    // way across the board to catch up. With min-image interpolation a trailing
-    // node crosses exactly as the head does — off one edge, onto the other —
-    // never visiting mid-board. Here node[1] crosses 19.8 -> 20.4 (wraps to 0.4);
-    // halfway is 20.1, drawn wrapped at 0.1.
-    const a = st({ mode: "analog", edgeWrap: true, snake: [{ x: 1.0, y: 5 }, { x: 19.8, y: 5 }], tick: 10 });
-    const b = st({ mode: "analog", edgeWrap: true, snake: [{ x: 1.6, y: 5 }, { x: 0.4, y: 5 }], tick: 11 });
+    // way across the board to catch up. The head has wrapped onto the left edge
+    // while the trail still sits on the right; the arc-length follow lays each body
+    // node one cell of arc back along that trail — measured the short way — so the
+    // body cleanly spans the seam (head left, trail right) with nothing in between.
+    const a = st({ mode: "analog", edgeWrap: true, snake: [{ x: 0.4, y: 5 }, { x: 19.8, y: 5 }, { x: 18.8, y: 5 }], tick: 10 });
+    const b = st({ mode: "analog", edgeWrap: true, snake: [{ x: 0.9, y: 5 }, { x: 19.9, y: 5 }, { x: 18.9, y: 5 }], tick: 11 });
     const m = composeScene(b, pairAcross(a, b), 0.5);
-    expect(m.snake[1]!.x).toBeCloseTo(0.1); // glided across the seam, not snapped to 0.4
-    expect(m.snake[1]!.x < 1 || m.snake[1]!.x > 19).toBe(true); // never mid-board
+    expect(m.snake[0]!.x).toBeLessThan(1); // head just across, on the left edge
+    expect(m.snake[1]!.x).toBeGreaterThan(18); // body still on the right, one cell of arc back
+    expect(m.snake[2]!.x).toBeGreaterThan(18);
+    for (const n of m.snake) expect(n.x < 2 || n.x > 18).toBe(true); // nothing smeared mid-board
   });
 
   // --- The pair resets: snap, don't glide, across a discontinuity -----------
