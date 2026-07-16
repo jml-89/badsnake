@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { advanceInterp, composeScene, initialInterp, WRAP_SNAP } from "./scene-model";
+import { advanceInterp, composeScene, initialInterp } from "./scene-model";
 import { initialState } from "../../core/game/snake";
 import type { GameState } from "../../core/game/types";
 
@@ -68,15 +68,32 @@ describe("scene model", () => {
     expect(m.snake[0]!.x).toBeCloseTo(5.5); // halfway between prev head (5) and cur head (6)
   });
 
-  // --- The wrap seam: snap across it, don't smear ---------------------------
+  // --- The wrap seam: glide the short way across it, don't smear ------------
 
-  it("snaps (does not lerp) a node that jumped a portal seam", () => {
-    // Head wrapped from the right edge to the left: a whole-board x jump.
+  it("glides a node across a portal seam the short way, then wraps — not the long way", () => {
+    // Head wrapped off the right edge to the left. The shortest path is +0.6 across
+    // the seam, so halfway it sits at 19.9 (still leaving the right edge, about to
+    // wrap) — NOT the ~9.9 mid-board point a naive lerp would smear through, and
+    // NOT an instant snap to the destination.
     const a = st({ mode: "analog", edgeWrap: true, snake: [{ x: 19.6, y: 5 }], tick: 10 });
     const b = st({ mode: "analog", edgeWrap: true, snake: [{ x: 0.2, y: 5 }], tick: 11 });
-    expect(Math.abs(19.6 - 0.2)).toBeGreaterThan(WRAP_SNAP); // precondition: it is a seam
+    const half = composeScene(b, pairAcross(a, b), 0.5);
+    expect(half.snake[0]!.x).toBeCloseTo(19.9); // mid-glide, hugging the edge it leaves
+    const done = composeScene(b, pairAcross(a, b), 1);
+    expect(done.snake[0]!.x).toBeCloseTo(0.2); // arrives at the destination on the far edge
+  });
+
+  it("carries a trailing body node across the seam by the same rule (the body follows the head)", () => {
+    // The reported bug: the head crosses the portal but the body smears the long
+    // way across the board to catch up. With min-image interpolation a trailing
+    // node crosses exactly as the head does — off one edge, onto the other —
+    // never visiting mid-board. Here node[1] crosses 19.8 -> 20.4 (wraps to 0.4);
+    // halfway is 20.1, drawn wrapped at 0.1.
+    const a = st({ mode: "analog", edgeWrap: true, snake: [{ x: 1.0, y: 5 }, { x: 19.8, y: 5 }], tick: 10 });
+    const b = st({ mode: "analog", edgeWrap: true, snake: [{ x: 1.6, y: 5 }, { x: 0.4, y: 5 }], tick: 11 });
     const m = composeScene(b, pairAcross(a, b), 0.5);
-    expect(m.snake[0]!.x).toBeCloseTo(0.2); // drawn at the destination, not the ~9.9 midpoint
+    expect(m.snake[1]!.x).toBeCloseTo(0.1); // glided across the seam, not snapped to 0.4
+    expect(m.snake[1]!.x < 1 || m.snake[1]!.x > 19).toBe(true); // never mid-board
   });
 
   // --- The pair resets: snap, don't glide, across a discontinuity -----------

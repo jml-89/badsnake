@@ -14,6 +14,7 @@
 // (a power-up `kind`, `wallsLethal`).
 
 import type { GameState, PowerupKind, Vec2 } from "../../core/game/types";
+import { axisDelta, wrapAxis } from "../../core/game/torus";
 
 export type Camera = "flat" | "3d";
 
@@ -39,17 +40,6 @@ export interface SceneModel {
   readonly snake: readonly Vec2[];
   readonly food: Vec2;
   readonly token: RenderToken | null;
-}
-
-/**
- * A render-node jump larger than this (world units, per axis) is treated as a
- * portal wrap seam rather than motion, so interpolation snaps across it instead
- * of sliding the body all the way back across the board.
- */
-export const WRAP_SNAP = 2;
-
-function lerp(a: number, b: number, t: number): number {
-  return a + (b - a) * t;
 }
 
 // --- Interpolation pair ----------------------------------------------------
@@ -93,18 +83,24 @@ export function advanceInterp(interp: InterpState, state: GameState): InterpStat
  * Composes the frame. `interp` is the pair from `advanceInterp`; `alpha` is the
  * render-time fraction in [0,1] toward the next tick. Cardinal draws raw (its
  * exact grid snap is the point of the mode); analog glides each node from prev to
- * cur, except across a portal wrap seam, where the node snaps to its destination
- * (a whole-board jump would otherwise smear backwards across the screen).
+ * cur along the *shortest* path — so across a portal wrap seam a node slides off
+ * one edge and re-enters the other (`axisDelta` + `wrapAxis`) instead of smearing
+ * the long way back across the board, and head and body cross by the identical
+ * rule. This is exact rather than a magnitude guess because `advanceInterp`
+ * collapses prev==cur on every non-single-tick jump (restart, death, mode flip,
+ * hidden-tab catch-up), so when we glide the two frames are one tick apart and
+ * the short way is provably the real path.
  */
 export function composeScene(state: GameState, interp: InterpState, alpha: number): SceneModel {
   const smooth = state.mode === "analog";
   const t = smooth ? Math.max(0, Math.min(1, alpha)) : 1;
   const { prev, cur } = interp;
+  const { width, height, edgeWrap } = state;
 
   const snake: Vec2[] = cur.map((segment, index) => {
     const from = prev[Math.min(index, prev.length - 1)] ?? segment;
-    const x = Math.abs(from.x - segment.x) > WRAP_SNAP ? segment.x : lerp(from.x, segment.x, t);
-    const y = Math.abs(from.y - segment.y) > WRAP_SNAP ? segment.y : lerp(from.y, segment.y, t);
+    const x = wrapAxis(from.x + axisDelta(from.x, segment.x, width, edgeWrap) * t, width);
+    const y = wrapAxis(from.y + axisDelta(from.y, segment.y, height, edgeWrap) * t, height);
     return { x, y };
   });
 

@@ -11,6 +11,7 @@ import {
   unitOf,
   wrap,
 } from "./heading";
+import { axisDelta, torusDist, wrapVec } from "./torus";
 
 // --- The simulation timeline ----------------------------------------------
 // There is ONE authoritative clock: a fixed-timestep integer tick. The
@@ -110,20 +111,6 @@ function dist(a: Vec2, b: Vec2): number {
 /** Clamp `v` into the closed integer range [0, size - 1]. */
 function clamp(v: number, size: number): number {
   return Math.max(0, Math.min(size - 1, v));
-}
-
-/**
- * Fold a coordinate back onto the board when the edge wraps (portal power-up).
- * Works for both integer cardinal cells and continuous analog floats — the
- * float remainder keeps the sub-cell offset, so a head at 20.1 on a 20-wide
- * board re-enters at 0.1. Deterministic (basic float arithmetic only).
- */
-function wrapAxis(v: number, size: number): number {
-  return ((v % size) + size) % size;
-}
-
-function wrapVec(p: Vec2, width: number, height: number): Vec2 {
-  return { x: wrapAxis(p.x, width), y: wrapAxis(p.y, height) };
 }
 
 export type NewGameOptions = {
@@ -348,13 +335,18 @@ function steerAnalog(heading: number, intents: readonly Intent[]): number {
  * overlaps any body node past the neck. Distance-based over the continuous
  * polyline, so it is identical for cardinal and analog — and is exactly the test
  * a future moving hazard (a falling bullet) would run against the same body.
+ *
+ * Distances go through `torusDist`, so with the portal power-up on both the neck
+ * arc-length and the head-vs-node test measure the *short* way round the seam: a
+ * node one cell behind a just-wrapped head reads as 1 cell away (neck-protected),
+ * not a whole board away. Off (classic walls) it is the plain distance, unchanged.
  */
-function selfHit(head: Vec2, nodes: readonly Vec2[]): boolean {
+function selfHit(head: Vec2, nodes: readonly Vec2[], width: number, height: number, edgeWrap: boolean): boolean {
   let arc = 0;
   for (let k = 1; k < nodes.length; k++) {
-    arc += dist(nodes[k - 1]!, nodes[k]!);
+    arc += torusDist(nodes[k - 1]!, nodes[k]!, width, height, edgeWrap);
     if (arc < NECK) continue; // still in the neck — never a real self-hit
-    if (dist(head, nodes[k]!) < HIT_RADIUS) return true;
+    if (torusDist(head, nodes[k]!, width, height, edgeWrap) < HIT_RADIUS) return true;
   }
   return false;
 }
@@ -417,7 +409,7 @@ function moveCardinal(state: GameState, intents: readonly Intent[], dt: number):
     // current tail cell is legal.
     const grown = [nextHead, ...snake];
     const trimmed = bite ? grown : grown.slice(0, lengthCells);
-    if (selfHit(nextHead, trimmed)) {
+    if (selfHit(nextHead, trimmed, state.width, state.height, state.edgeWrap)) {
       dead = true; // freeze at the last good position (do not commit the move)
       break;
     }
@@ -461,35 +453,37 @@ function moveAnalog(state: GameState, intents: readonly Intent[], dt: number): M
   const head = state.snake[0]!;
   const rawNext: Vec2 = { x: head.x + step.x * speed, y: head.y + step.y * speed };
 
-  const wrapped = outOfBounds(rawNext, state.width, state.height);
-  if (wrapped && !state.edgeWrap) {
+  const left = outOfBounds(rawNext, state.width, state.height);
+  if (left && !state.edgeWrap) {
     return { state: { ...state, heading, phase: "dead" }, ate: false, collected: null };
   }
-  const nextHead = wrapped ? wrapVec(rawNext, state.width, state.height) : rawNext;
+  const nextHead = left ? wrapVec(rawNext, state.width, state.height) : rawNext;
 
+  // Lay a fresh node once the head has opened a full cell of gap to the node
+  // behind it. Gap and direction go through `axisDelta`, so they measure the
+  // *short* way round when the edge wraps: right after a portal crossing the
+  // anchor sits on the far edge, and this places the new node just across the
+  // seam (behind the head) instead of dragging one straight across the board —
+  // which is what used to smear the body back the moment the head wrapped. Off,
+  // it is the plain anchor-relative placement, unchanged.
+  const anchor = state.snake[1] ?? head;
+  const dx = axisDelta(anchor.x, nextHead.x, state.width, state.edgeWrap);
+  const dy = axisDelta(anchor.y, nextHead.y, state.height, state.edgeWrap);
+  const gap = Math.sqrt(dx * dx + dy * dy);
   let nodes: Vec2[];
-  if (wrapped) {
-    // Portal crossing: the head jumped to the far edge, so the anchor-relative
-    // interpolation below would lay a node straight across the board. Start a
-    // fresh polyline node at the wrapped head instead — the seam is inherent to
-    // wrapping, and the renderer snaps (rather than glides) across it.
-    nodes = [nextHead, ...state.snake];
+  if (gap >= 1) {
+    // Place the new node exactly one cell from the anchor toward the head (along
+    // the shortest path), so spacing stays ~1 cell even across the seam or when a
+    // tick overshoots. Fold it back onto the board in case that path crossed the edge.
+    const inv = 1 / gap;
+    const commit: Vec2 = wrapVec(
+      { x: anchor.x + dx * inv, y: anchor.y + dy * inv },
+      state.width,
+      state.height,
+    );
+    nodes = [nextHead, commit, ...state.snake.slice(1)];
   } else {
-    // Lay a fresh node once the head has opened a full cell of gap to the last one.
-    const anchor = state.snake[1] ?? head;
-    const gap = dist(nextHead, anchor);
-    if (gap >= 1) {
-      // Place the new node exactly one cell from the anchor toward the head, so
-      // spacing stays ~1 cell even when a tick overshoots.
-      const inv = 1 / gap;
-      const commit: Vec2 = {
-        x: anchor.x + (nextHead.x - anchor.x) * inv,
-        y: anchor.y + (nextHead.y - anchor.y) * inv,
-      };
-      nodes = [nextHead, commit, ...state.snake.slice(1)];
-    } else {
-      nodes = [nextHead, ...state.snake.slice(1)];
-    }
+    nodes = [nextHead, ...state.snake.slice(1)];
   }
 
   const bite = dist(nextHead, state.food) < HIT_RADIUS;
@@ -497,7 +491,7 @@ function moveAnalog(state: GameState, intents: readonly Intent[], dt: number): M
   // Keep at most one lead node ahead of `lengthCells` committed nodes.
   const trimmed = nodes.slice(0, lengthCells + 1);
 
-  if (selfHit(nextHead, trimmed)) {
+  if (selfHit(nextHead, trimmed, state.width, state.height, state.edgeWrap)) {
     // Freeze at the last good position (do not commit the move).
     return { state: { ...state, heading, phase: "dead" }, ate: false, collected: null };
   }
