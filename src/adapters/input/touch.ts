@@ -14,6 +14,14 @@ import { HEADINGS } from "../../core/game/heading";
 // snaps that index to the nearest cardinal; after it, the snake points wherever
 // the thumb does.
 //
+// The stick *floats*: it has no fixed home. Wherever the thumb first lands
+// becomes the origin, and the offset is measured from there — not from a fixed
+// on-screen centre. That is the standard fix for the "snap to thumb" bug, where a
+// static stick reads a direction the instant a thumb touches down a few pixels
+// off its centre. With a floating origin the first frame is dead-centre (zero
+// offset, inside the deadzone), so no direction is emitted until the thumb
+// actually travels.
+//
 // Controls only mount on coarse pointers (touch), so desktop stays keyboard-only.
 
 const DEADZONE = 0.28; // fraction of the joystick radius the thumb must clear to steer
@@ -27,6 +35,32 @@ function offsetToIndex(dx: number, dy: number, radius: number): number | null {
   const angle = Math.atan2(dy, dx); // (-π, π]
   const turns = angle / (2 * Math.PI); // (-0.5, 0.5]
   return ((Math.round(turns * HEADINGS) % HEADINGS) + HEADINGS) % HEADINGS;
+}
+
+/**
+ * Resolve a thumb position against the touchdown origin into a clamped knob
+ * offset and a heading index. `dx`/`dy` are the offset from `origin` to `point`,
+ * clamped to the joystick radius (so the knob rides the rim at full tilt);
+ * `index` is that offset quantized to a heading, or null inside the deadzone.
+ *
+ * This is the whole no-snap contract in one pure function: when `point` equals
+ * `origin` (the instant the thumb lands), the offset is zero and `index` is null
+ * — no direction until the thumb moves. Kept browser-free so it is unit-testable
+ * in Node, matching the repo's "test the decision, not the pixels" split.
+ */
+export function resolveStick(
+  origin: { x: number; y: number },
+  point: { x: number; y: number },
+  radius: number,
+): { dx: number; dy: number; index: number | null } {
+  let dx = point.x - origin.x;
+  let dy = point.y - origin.y;
+  const mag = Math.sqrt(dx * dx + dy * dy);
+  if (mag > radius) {
+    dx = (dx / mag) * radius;
+    dy = (dy / mag) * radius; // clamp the knob to the rim
+  }
+  return { dx, dy, index: offsetToIndex(dx, dy, radius) };
 }
 
 function styleButton(el: HTMLElement, label: string): void {
@@ -70,20 +104,36 @@ export function createTouchInput(doc: Document = document): IntentSource {
     touchAction: "none",
   } satisfies Partial<CSSStyleDeclaration>);
 
-  // --- Joystick (bottom-left) ---
+  // --- Joystick (floating, bottom-left region) ---
+  // `zone` is the invisible touch target: touch anywhere in it and the stick is
+  // born there. `base`/`knob` are the visuals, hidden until a thumb lands and
+  // repositioned to the touchdown point each time. It's the bottom-left region,
+  // not the whole left half — the conventional carve-up. The right half is left
+  // free for the buttons, and a top strip is spared so any future HUD there stays
+  // tappable.
   const RADIUS = 64;
+
+  const zone = doc.createElement("div");
+  Object.assign(zone.style, {
+    position: "absolute",
+    left: "0",
+    bottom: "0",
+    width: "50%",
+    height: "67%", // bottom two-thirds; spare the top strip for a HUD
+    touchAction: "none",
+    pointerEvents: "auto",
+  } satisfies Partial<CSSStyleDeclaration>);
+
   const base = doc.createElement("div");
   Object.assign(base.style, {
     position: "absolute",
-    left: "24px",
-    bottom: "24px",
     width: `${RADIUS * 2}px`,
     height: `${RADIUS * 2}px`,
     borderRadius: "50%",
     border: "1px solid rgba(255,255,255,0.16)",
     background: "rgba(255,255,255,0.05)",
-    touchAction: "none",
-    pointerEvents: "auto",
+    visibility: "hidden", // shown at the touchdown point on pointerdown
+    pointerEvents: "none",
   } satisfies Partial<CSSStyleDeclaration>);
 
   const knob = doc.createElement("div");
@@ -103,39 +153,41 @@ export function createTouchInput(doc: Document = document): IntentSource {
   base.appendChild(knob);
 
   let pointerId: number | null = null;
+  // The touchdown point, in viewport pixels. The layer is fixed at inset:0, so
+  // viewport coords and layer-local coords coincide — no offset bookkeeping.
+  const origin = { x: 0, y: 0 };
 
   const updateFromEvent = (ev: PointerEvent): void => {
-    const rect = base.getBoundingClientRect();
-    const cx = rect.left + rect.width / 2;
-    const cy = rect.top + rect.height / 2;
-    let dx = ev.clientX - cx;
-    let dy = ev.clientY - cy;
-    const mag = Math.sqrt(dx * dx + dy * dy);
-    if (mag > RADIUS) {
-      dx = (dx / mag) * RADIUS;
-      dy = (dy / mag) * RADIUS; // clamp the knob to the rim
-    }
+    const { dx, dy, index } = resolveStick(origin, { x: ev.clientX, y: ev.clientY }, RADIUS);
     knob.style.transform = `translate(${dx}px, ${dy}px)`;
-    stickIndex = offsetToIndex(dx, dy, RADIUS);
+    stickIndex = index;
   };
 
   const releaseStick = (): void => {
     pointerId = null;
     stickIndex = null;
     knob.style.transform = "translate(0px, 0px)";
+    base.style.visibility = "hidden";
   };
 
-  base.addEventListener("pointerdown", (ev) => {
+  zone.addEventListener("pointerdown", (ev) => {
     pointerId = ev.pointerId;
-    base.setPointerCapture(ev.pointerId);
+    zone.setPointerCapture(ev.pointerId);
+    origin.x = ev.clientX;
+    origin.y = ev.clientY;
+    // Place the stick so its centre sits under the thumb, then read it: offset is
+    // zero this frame, so no direction is emitted until the thumb travels.
+    base.style.left = `${origin.x - RADIUS}px`;
+    base.style.top = `${origin.y - RADIUS}px`;
+    base.style.visibility = "visible";
     updateFromEvent(ev);
     ev.preventDefault();
   });
-  base.addEventListener("pointermove", (ev) => {
+  zone.addEventListener("pointermove", (ev) => {
     if (ev.pointerId === pointerId) updateFromEvent(ev);
   });
-  base.addEventListener("pointerup", releaseStick);
-  base.addEventListener("pointercancel", releaseStick);
+  zone.addEventListener("pointerup", releaseStick);
+  zone.addEventListener("pointercancel", releaseStick);
 
   // --- Buttons (bottom-right) ---
   const buttons = doc.createElement("div");
@@ -159,6 +211,7 @@ export function createTouchInput(doc: Document = document): IntentSource {
   buttons.appendChild(makeButton("⏸", { kind: "pause" }));
   buttons.appendChild(makeButton("↻", { kind: "restart" }));
 
+  layer.appendChild(zone);
   layer.appendChild(base);
   layer.appendChild(buttons);
   doc.body.appendChild(layer);
