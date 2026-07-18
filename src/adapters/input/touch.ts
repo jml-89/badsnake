@@ -104,20 +104,22 @@ export function createTouchInput(doc: Document = document): IntentSource {
     touchAction: "none",
   } satisfies Partial<CSSStyleDeclaration>);
 
-  // --- Joystick (floating, left half of the screen) ---
+  // --- Joystick (floating, bottom-left region) ---
   // `zone` is the invisible touch target: touch anywhere in it and the stick is
   // born there. `base`/`knob` are the visuals, hidden until a thumb lands and
-  // repositioned to the touchdown point each time. The buttons live in the right
-  // half, so the zone never steals their taps.
+  // repositioned to the touchdown point each time. It's the bottom-left region,
+  // not the whole left half — the conventional carve-up. The right half is left
+  // free for the buttons, and a top strip is spared so any future HUD there stays
+  // tappable.
   const RADIUS = 64;
 
   const zone = doc.createElement("div");
   Object.assign(zone.style, {
     position: "absolute",
     left: "0",
-    top: "0",
     bottom: "0",
     width: "50%",
+    height: "67%", // bottom two-thirds; spare the top strip for a HUD
     touchAction: "none",
     pointerEvents: "auto",
   } satisfies Partial<CSSStyleDeclaration>);
