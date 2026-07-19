@@ -93,17 +93,95 @@ function makeTokenTexture(emoji: string, accent: string): THREE.Texture {
 }
 
 /**
+ * The 3D power-up's camera pose. All three keep the board centred with north up
+ * and east to the right (the flat view's orientation) — they differ only in how
+ * much *perspective* they impose, which is exactly the difficulty knob: a low
+ * raking angle crushes the far edge and dwarfs the near blocks, which is what
+ * made 3D mode punishing.
+ *
+ * - `low`   — the original: a low, pulled-back perspective. Dramatic, but the far
+ *   half of the board is a thin unreadable strip. Kept for comparison.
+ * - `high`  — raised and centred over the board with a narrow (telephoto) FOV, so
+ *   the depth still reads but the foreshortening is gentle. The default.
+ * - `ortho` — a tilted *orthographic* camera: real 3D blocks and lighting, but
+ *   zero perspective, so every cell is the same on-screen size. Judging position
+ *   is exactly as easy as the flat view — the fairest of the three.
+ */
+export type Camera3DStyle = "low" | "high" | "ortho";
+
+const DEFAULT_CAMERA_3D: Camera3DStyle = "high";
+
+/**
+ * Builds the 3D camera for a given style. Screen orientation must match the flat
+ * view — north (y=0) at the top, east (+x) to the right. As the long comment on
+ * the old inline camera explained, the board's axes form a left-handed triple
+ * (the kernel's y points down) and no real camera pose can put north up *and*
+ * east right at once; the flat OrthographicCamera dodges it with an inverted-Y
+ * frustum, and every 3D camera here needs the same reflection applied to its
+ * projection (the final `elements[5] *= -1`). Like every quad, wall, and block in
+ * this scene, that reflection flips triangle winding — which is why all the
+ * meshes render DoubleSide.
+ */
+function makeCamera3D(style: Camera3DStyle, cols: number, rows: number): THREE.Camera {
+  const cx = cols / 2;
+  const cy = rows / 2;
+  const maxDim = Math.max(cols, rows);
+
+  let camera: THREE.PerspectiveCamera | THREE.OrthographicCamera;
+  if (style === "ortho") {
+    // Tilted orthographic: a proper iso-style rake (~55° off vertical) so the
+    // blocks visibly stand up and catch the light, but no perspective — the
+    // frustum, not distance, sets size, so every cell reads the same on screen.
+    const half = maxDim * 0.7; // a little margin around the tilted board
+    camera = new THREE.OrthographicCamera(-half, half, half, -half, 0.1, 1000);
+    camera.position.set(cx, cy + rows * 1.15, maxDim * 0.8);
+    camera.lookAt(cx, cy, 0);
+  } else if (style === "high") {
+    // Raised and centred with a narrow FOV: pulled far back and zoomed in, which
+    // flattens the perspective (telephoto) while keeping enough tilt to read depth.
+    camera = new THREE.PerspectiveCamera(34, 1, 0.1, 1000);
+    camera.position.set(cx, cy + rows * 0.7, maxDim * 1.85);
+    camera.lookAt(cx, cy, 0);
+  } else {
+    // The original low, dramatic rake — pulled back over the south edge.
+    camera = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
+    camera.position.set(cx, rows * 1.65, maxDim * 0.9);
+    camera.lookAt(cx, rows * 0.42, 0);
+  }
+  camera.updateProjectionMatrix();
+  camera.projectionMatrix.elements[5] *= -1; // invert Y: north to the top, east stays right
+  return camera;
+}
+
+/** Construction-time knobs for the renderer. */
+export interface ThreeRendererOptions {
+  /** Which 3D-power-up camera pose to start with. Defaults to `high`. */
+  readonly camera3d?: Camera3DStyle;
+}
+
+/**
+ * The renderer, plus the runtime knobs the debug menu drives. The base `Renderer`
+ * port stays minimal (render/dispose); these extras are concrete affordances the
+ * composition root can wire up without widening the port.
+ */
+export interface ThreeRenderer extends Renderer {
+  /** Swap the 3D camera pose live — used by the debug menu to A/B the styles. */
+  setCamera3DStyle(style: Camera3DStyle): void;
+}
+
+/**
  * A deliberately thin three.js renderer. It stands up a genuine 3D scene viewed
  * through an ORTHOGRAPHIC camera by default, so today it reads as a flat grid —
  * but the z-axis, lighting, and camera moves are all available, and the 🧊 3D
  * power-up switches the snake into raised, lit blocks seen through a tilted
- * perspective camera. The renderer only composes what the kernel hands it.
+ * camera. The renderer only composes what the kernel hands it.
  */
 export function createThreeRenderer(
   container: HTMLElement,
   cols: number,
   rows: number,
-): Renderer {
+  options: ThreeRendererOptions = {},
+): ThreeRenderer {
   const renderer = new THREE.WebGLRenderer({ antialias: true });
   renderer.setPixelRatio(window.devicePixelRatio);
   const side = Math.min(container.clientWidth || 480, container.clientHeight || 480) || 480;
@@ -120,25 +198,12 @@ export function createThreeRenderer(
   const flatCamera = new THREE.OrthographicCamera(0, cols, 0, rows, -10, 10);
   flatCamera.position.z = 5;
 
-  // 3D: a perspective camera hovering above the board's centre and pulled back
-  // over the south edge, tilted so the raised blocks stand up toward the viewer
-  // with north receding to the top of the frame.
-  //
-  // Screen orientation must match the flat view — north (y=0) at the top, east
-  // (+x) to the right — so the 3D power-up doesn't mirror the board. But the
-  // board's (east, north, out-of-board) axes form a LEFT-handed triple (the
-  // kernel's y points down), and no real camera pose can put north up AND east
-  // right at once: orienting for one mirrors the other (the old `up = (0,-1,0)`
-  // got north up but flipped east/west — the snake appeared on the wrong side).
-  // The flat OrthographicCamera dodges this with an inverted-Y frustum (top=0,
-  // bottom=rows); the perspective camera needs the same reflection, applied to
-  // its projection. Like the flat quads and walls, the reflection flips triangle
-  // winding, so the lit blocks below render with DoubleSide.
-  const camera3d = new THREE.PerspectiveCamera(50, 1, 0.1, 1000);
-  camera3d.position.set(cols / 2, rows * 1.65, Math.max(cols, rows) * 0.9);
-  camera3d.lookAt(cols / 2, rows * 0.42, 0);
-  camera3d.updateProjectionMatrix();
-  camera3d.projectionMatrix.elements[5] *= -1; // invert Y: north to the top, east stays right
+  // 3D: a camera hovering above the board that raises the snake into lit blocks.
+  // Which pose (and thus how much perspective it imposes) is selectable — see
+  // `Camera3DStyle` and `makeCamera3D` above — and swappable at runtime so the
+  // debug menu can A/B the styles. `let`, because `setCamera3DStyle` rebuilds it.
+  let camera3dStyle = options.camera3d ?? DEFAULT_CAMERA_3D;
+  let camera3d = makeCamera3D(camera3dStyle, cols, rows);
 
   // Lights for the 3D materials. Harmless in flat mode: the unlit MeshBasic
   // materials there ignore them entirely.
@@ -282,6 +347,11 @@ export function createThreeRenderer(
       }
 
       renderer.render(scene, camera);
+    },
+    setCamera3DStyle(style: Camera3DStyle): void {
+      if (style === camera3dStyle) return;
+      camera3dStyle = style;
+      camera3d = makeCamera3D(style, cols, rows);
     },
     dispose(): void {
       cells.clear();

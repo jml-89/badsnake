@@ -212,7 +212,7 @@ function placePowerup(state: GameState): GameState {
  * - `portal`  — turn the lethal walls off; the edge now wraps.
  * - `threeD`  — flip the render-only depth flag.
  */
-function applyPowerupEffect(state: GameState, kind: PowerupKind): GameState {
+export function applyPowerupEffect(state: GameState, kind: PowerupKind): GameState {
   switch (kind) {
     case "analog":
       return { ...state, mode: "analog" };
