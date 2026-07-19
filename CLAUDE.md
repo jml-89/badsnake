@@ -86,11 +86,26 @@ REPRO_QUERY="powerup=portal" REPRO_OUT="$PWD/tok.png" node scripts/repro.mjs
 # an *effect* already active: 3d=1 (tilted 3D), portal=1 (walls off / cyan border),
 # mode=analog (continuous steering), seed=N — combine freely
 REPRO_QUERY="3d=1&mode=analog" REPRO_OUT="$PWD/fx.png" node scripts/repro.mjs
+# the 3D camera pose: cam3d=high (default, gentle perspective) | ortho (tilted,
+# no perspective — fairest) | low (the original raking angle). grow=N eats N
+# pellets up front (longer + faster snake) to test late-game states.
+REPRO_QUERY="3d=1&cam3d=ortho&grow=8" REPRO_OUT="$PWD/cam.png" node scripts/repro.mjs
 ```
 
 The overrides only pre-seed the *initial state* (see `applyDemoOverrides` in
 `app/main.ts`); they touch nothing in the pure kernel. Note the headless capture
 can catch a transitional first frame — if a token looks missing, re-run.
+
+### The debug menu (`?debug=1`) — QA affordance for a real device
+
+For hands-on QC (especially on a phone), append `?debug=1` to mount a small 🐞
+menu (bottom-right, clear of the touch joystick) that reaches into the live game:
+grant any power-up, grow the snake +5 length/speed, and flip the 3D camera pose
+live to A/B the styles. It's opt-in and mounted only behind the flag (see
+`mountDebugMenu`, `adapters/debug/debug-menu.ts`) — the "expose the wiring,
+compose later" stance, so nothing ships in the default product. Power-up grants
+route through the kernel's own `applyPowerupEffect`, so a debug grant is the
+identical state transition to walking over the token — no duplicated rules.
 
 Notes for this environment:
 - Chromium is pre-installed at `/opt/pw-browsers`; do **not** run

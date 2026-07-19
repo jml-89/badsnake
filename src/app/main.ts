@@ -5,6 +5,8 @@ import { createKeyboardInput } from "../adapters/input/keyboard";
 import { createTouchInput } from "../adapters/input/touch";
 import { mergeInputs } from "../adapters/input/merge";
 import { createThreeRenderer } from "../adapters/render/three-renderer";
+import type { Camera3DStyle } from "../adapters/render/three-renderer";
+import { mountDebugMenu } from "../adapters/debug/debug-menu";
 
 // --- Composition root: the only place that touches both sides and owns real
 // time. It constructs the impure adapters, injects them, and runs the loop. ---
@@ -38,20 +40,47 @@ function applyDemoOverrides(base: GameState): GameState {
     const pos: Vec2 = { x: Math.round(head.x), y: Math.max(0, Math.round(head.y) - 5) };
     s = { ...s, powerup: { kind, pos } };
   }
+  // Grow the snake to a target size/speed up front (`?grow=N` eats N pellets'
+  // worth): handy for landing straight in a fast, long-snake game to test.
+  const grow = Number(q.get("grow"));
+  if (Number.isFinite(grow) && grow > 0) {
+    s = { ...s, lengthCells: s.lengthCells + grow, score: s.score + grow };
+  }
   return s;
+}
+
+/** The 3D camera pose to build the renderer with (`?cam3d=low|high|ortho`). */
+function cameraOverride(): Camera3DStyle | undefined {
+  const cam = new URLSearchParams(window.location.search).get("cam3d");
+  return cam === "low" || cam === "high" || cam === "ortho" ? cam : undefined;
 }
 
 const clock = createBrowserClock();
 // Two devices, one intent stream: keyboard everywhere, on-screen joystick +
 // buttons on touch devices (the touch adapter mounts nothing on desktop).
 const input = mergeInputs([createKeyboardInput(), createTouchInput()]);
-const renderer = createThreeRenderer(container, COLS, ROWS);
+const cam3d = cameraOverride();
+const renderer = createThreeRenderer(container, COLS, ROWS, cam3d ? { camera3d: cam3d } : {});
 
 const seedParam = new URLSearchParams(window.location.search).get("seed");
 const seed = seedParam !== null ? Number(seedParam) >>> 0 : SEED;
 let state: GameState = applyDemoOverrides(initialState({ width: COLS, height: ROWS, seed }));
 let accumulator = 0;
 let last = clock.now();
+
+// Opt-in QA affordance (`?debug=1`): a small menu to grant power-ups, grow the
+// snake, and flip the 3D camera live — the "expose the wiring, compose later"
+// stance. It reads and rewrites the live `state` through these two closures;
+// nothing is composed into the default product unless the flag is present.
+if (new URLSearchParams(window.location.search).get("debug") === "1") {
+  mountDebugMenu(document.body, {
+    getState: () => state,
+    setState: (next) => {
+      state = next;
+    },
+    setCamera3DStyle: (style) => renderer.setCamera3DStyle(style),
+  });
+}
 
 // Fixed-timestep loop on a single fine step (SIM_DT_MS). Movement speed lives
 // inside the kernel now as a velocity (the difficulty curve), so the step stays
